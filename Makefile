@@ -45,7 +45,7 @@ clean:
 	rm -f $(OBJECTS) $(NAME).elf
 
 program: $(NAME).hex
-	avrdude -c $(AVRDUDE_PROGRAMMERID) -p $(AVRDUDE_MCU) -U flash:w:$(NAME).hex
+	avrdude -c $(AVRDUDE_PROGRAMMERID) -p $(AVRDUDE_MCU) -U flash:w:bin/$(NAME).hex
 
 test:
 	avrdude -c $(AVRDUDE_PROGRAMMERID) -p $(AVRDUDE_MCU) -v
