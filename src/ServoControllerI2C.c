@@ -349,7 +349,7 @@ ISR(TIMER1_COMPA_vect){
 		SET(_SFR_IO8(ServoChannel[Index].port), ServoChannel[Index].pin);
 		Stop1 = ServoChannel[Index].stop;
 		Index++;
-		if (recv[Index] == SLOW_PLUS){
+		if (recv[Index] == SLOW_PLUS){ 
 			if (ServoChannel[Index].stop < SERVO_MAX_PULSE){
 				ServoChannel[Index].stop++;
 			}else ServoChannel[Index].stop = SERVO_MAX_PULSE;
