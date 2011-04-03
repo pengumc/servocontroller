@@ -94,10 +94,11 @@ uint8_t r_index =0;
 uint8_t recv[BUFLEN_SERVO_DATA]; //buffer to store received bytes
 uint8_t t_index=0;
 uint8_t tran[BUFLEN_ACC_DATA];
-uint8_t new_buffer=0;
+uint8_t new_cmd=0;
 uint8_t timing=0;
 uint8_t reset=0;
 uint8_t command = 0;
+
 //----------------------------------------------------------------------------
 //Functions
 //----------------------------------------------------------------------------
@@ -112,7 +113,7 @@ inline void init_I2C(){
 void handleI2C(){ //slave version
   //check if we need to do any software actions
   if(CHK(TWCR,TWINT)){
-		TOG(PORTD,PD3);
+		
     switch(TW_STATUS){
 //--------------Slave receiver------------------------------------
     //SLA_W received and acked, prepare for data receiving
@@ -122,18 +123,27 @@ void handleI2C(){ //slave version
       break;
     case 0x80:  //a byte was received, store it and 
                 //setup the buffer to recieve another
-			recv[r_index] = TWDR;
 			//check if the received buffer is a command
-			if (r_index == 0){
-				command = TWDR;
-			} else{
-				if(TWDR != command) command = 0;
+			if(r_index ==0){
+				if(TWDR < SERVO_MIN_PULSE) {
+					new_cmd = TWDR;
+				}else{
+					recv[r_index]= TWDR;
+					new_cmd =0;
+				}
+			} 
+			if(r_index>0){
+				if(new_cmd == 0){
+					recv[r_index]=TWDR;
+				}
+				if(new_cmd != TWDR) new_cmd = 0;
+				
 			}
       r_index++;
       //don't ack next data if buffer is full
       if(r_index >= BUFLEN_SERVO_DATA){
         TWNACK;
-				new_buffer=1;
+				command = new_cmd;
       }else {
     TWACK;
    }
@@ -222,7 +232,7 @@ void init_channels(){
 		}
 		ServoChannel[i].port = _SFR_IO_ADDR(SERVO_PORT_FIRST8);
 		ServoChannel[i].pin = i;
-		ServoChannel[i].stop =pw;
+		//ServoChannel[i].stop =pw;
 		recv[i] = pw;
 	}
 	for(i=8;i<SERVO_AMOUNT;i++){
@@ -232,31 +242,36 @@ void init_channels(){
 		}
 		ServoChannel[i].port = _SFR_IO_ADDR(SERVO_PORT_SECOND8);
 		ServoChannel[i].pin = i - 6;
-		ServoChannel[i].stop = pw;
+		//ServoChannel[i].stop = pw;
 		recv[i]=pw;
 	}
 
 }
 
- inline void execute(uint8_t cmd){
+ inline void execute(){
 	register uint8_t i;
-	switch(cmd){
+	//SET(PORTD,PD3); //green	
+						TOG(PORTD,PD3);
+
+	switch(command){
 	case I2C_RESET:
 		reset=1;
 		break;
 	case I2C_LOAD_STARTPOS:
-		CLR(TIMSK, OCIE1A);
+		cli();
 		init_channels();
-		SET(TIMSK, OCIE1A);
+		sei();
 		break;
 	case I2C_SAVE_STARTPOS:
-		CLR(TIMSK, OCIE1A);
+		cli();
 		for(i=0;i<SERVO_AMOUNT;i++){
 			eeprom_write_byte(i, ServoChannel[i].stop);
 		}
-		SET(TIMSK, OCIE1A);
+		sei();
 		break;
 	}
+	command=0;
+	//CLR(PORTD,PD3);
 }
 
 //----------------------------------------------------------------------------
@@ -284,6 +299,7 @@ int main() {
 while(1){
 	if(!reset) wdt_reset();
 	handleI2C();
+	if(command != 0) execute();
 	
 	
 	}//main loop end
@@ -309,8 +325,7 @@ ISR(TIMER0_COMP_vect){
 //timer1 interrupt routine
 ISR(TIMER1_COMPA_vect){
 	//stop and reset timer0 and the counter
-	TOG(PORTD,PD5);
-	TOG(timing,1);
+	TOG(PORTD,PD5);//red
 	CLR(TIMSK, OCIE0);
 	TCCR0 = 0;
 	TCNT0=0;
@@ -321,37 +336,33 @@ ISR(TIMER1_COMPA_vect){
 
 	if(Index != SERVO_AMOUNT) {
 		//update if necessary
-		if(timing){
-			if (recv[Index] == SLOW_PLUS){
-				if (ServoChannel[Index].stop < SERVO_MAX_PULSE){
-					ServoChannel[Index].stop++;
-				}
-				else ServoChannel[Index].stop = SERVO_MAX_PULSE;
-			}else if(recv[Index]== SLOW_MINUS){
-				if (ServoChannel[Index].stop > SERVO_MIN_PULSE) {
-					ServoChannel[Index].stop--;
-				}else ServoChannel[Index].stop = SERVO_MIN_PULSE;
-			}else {
-				ServoChannel[Index].stop = recv[Index];
+		if (recv[Index] == SLOW_PLUS){
+			if (ServoChannel[Index].stop < SERVO_MAX_PULSE){
+				ServoChannel[Index].stop++;
 			}
+			else ServoChannel[Index].stop = SERVO_MAX_PULSE;
+		}else if(recv[Index]== SLOW_MINUS){
+			if (ServoChannel[Index].stop > SERVO_MIN_PULSE) {
+				ServoChannel[Index].stop--;
+			}else ServoChannel[Index].stop = SERVO_MIN_PULSE;
+		}else {
+			ServoChannel[Index].stop = recv[Index];
 		}
 		
 		//set TWO servo channels high
 		SET(_SFR_IO8(ServoChannel[Index].port), ServoChannel[Index].pin);
 		Stop1 = ServoChannel[Index].stop;
-		if(timing){
-			Index++;
-			if (recv[Index] == SLOW_PLUS){
-				if (ServoChannel[Index].stop < SERVO_MAX_PULSE){
-					ServoChannel[Index].stop++;
-				}else ServoChannel[Index].stop = SERVO_MAX_PULSE;
-			}else if(recv[Index]== SLOW_MINUS){
-				if (ServoChannel[Index].stop > SERVO_MIN_PULSE){
-					ServoChannel[Index].stop--;
-				}else ServoChannel[Index].stop = SERVO_MIN_PULSE;
-			}else {
-				ServoChannel[Index].stop = recv[Index];
-			}
+		Index++;
+		if (recv[Index] == SLOW_PLUS){
+			if (ServoChannel[Index].stop < SERVO_MAX_PULSE){
+				ServoChannel[Index].stop++;
+			}else ServoChannel[Index].stop = SERVO_MAX_PULSE;
+		}else if(recv[Index]== SLOW_MINUS){
+			if (ServoChannel[Index].stop > SERVO_MIN_PULSE){
+				ServoChannel[Index].stop--;
+			}else ServoChannel[Index].stop = SERVO_MIN_PULSE;
+		}else {
+			ServoChannel[Index].stop = recv[Index];
 		}
 		SET(_SFR_IO8(ServoChannel[Index].port), ServoChannel[Index].pin);
 		Stop2 = ServoChannel[Index].stop;

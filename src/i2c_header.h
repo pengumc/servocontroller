@@ -20,6 +20,9 @@
 //I2C commands
 //these are issued by sending an array filled with only the define value
 
+#define I2C_COMMAND_FAILED 255
+//internally used to idenitify faulty buffers
+
 #define I2C_RESET 1
 //will reset the I2C slave
 
