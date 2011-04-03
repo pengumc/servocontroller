@@ -181,17 +181,26 @@ inline void init_servo_timers(void){
 inline void init_channels(){
 //you need to set your own DDR
 	register uint8_t i;
+	uint16_t pw;
 	for(i=0;i<8;i++){
+		pw = eeprom_read_word(&saved[i]);
+		if(pw < SERVO_MIN_PULSE || pw > SERVO_MAX_PULSE){
+			pw = (SERVO_MAX_PULSE + SERVO_MIN_PULSE) /2;
+		}
 		ServoChannel[i].port = _SFR_IO_ADDR(SERVO_PORT_FIRST8);
 		ServoChannel[i].pin = i;
-		ServoChannel[i].stop =saved[i];
-		recv[i] = saved[i];
+		ServoChannel[i].stop =pw;
+		recv[i] = pw;
 	}
 	for(i=8;i<SERVO_AMOUNT;i++){
+		pw = eeprom_read_word(&saved[i]);
+		if(pw < SERVO_MIN_PULSE || pw > SERVO_MAX_PULSE){
+			pw = (SERVO_MAX_PULSE + SERVO_MIN_PULSE) /2;
+		}
 		ServoChannel[i].port = _SFR_IO_ADDR(SERVO_PORT_SECOND8);
 		ServoChannel[i].pin = i - 6;
-		ServoChannel[i].stop = saved[i];
-		recv[i]=saved[i];
+		ServoChannel[i].stop = pw;
+		recv[i]=pw;
 	}
 
 }
