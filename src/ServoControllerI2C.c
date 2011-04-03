@@ -41,8 +41,6 @@ the RemainingTime until the next period is loaded into the timer.
 #include "i2c_header.h"
 #include <avr/wdt.h>
 //#include <avr/eeprom.h> //won't compile?
-//uint8_t EEMEM saved[SERVO_AMOUNT]; 
-//	array in eeprom to save the starting pos
 
 
 
@@ -77,6 +75,7 @@ typedef struct struct_multiservo{
 	uint8_t port;
 	uint8_t pin;
 } ServoChannel_type;
+
 
 //----------------------------------------------------------------------------
 //GlobalS
@@ -181,6 +180,28 @@ void handleI2C(){ //slave version
   }
 }
 
+void eeprom_write_byte(uint8_t address, uint8_t value){
+	//wait for access
+	while(CHK(EECR, EEWE)){
+	;
+	}
+	EEAR = address;
+	EEDR = value;
+	SET(EECR,EEMWE);
+	SET(EECR, EEWE);
+}
+
+uint8_t eeprom_read_byte(uint8_t address){
+	//wait for access
+	while(CHK(EECR, EEWE)){
+	;
+	}
+	EEAR = address;
+	SET(EECR,EERE);
+	return EEDR;
+	
+}
+
 
 inline void init_servo_timers(void){
 	TCCR1A =0;
@@ -195,7 +216,7 @@ void init_channels(){
 	register uint8_t i;
 	uint8_t pw=72;
 	for(i=0;i<8;i++){
-		//pw = eeprom_read_byte(&saved[i]);
+		pw = eeprom_read_byte(i);
 		if(pw < SERVO_MIN_PULSE || pw > SERVO_MAX_PULSE){
 			pw = (SERVO_MAX_PULSE + SERVO_MIN_PULSE) /2;
 		}
@@ -205,7 +226,7 @@ void init_channels(){
 		recv[i] = pw;
 	}
 	for(i=8;i<SERVO_AMOUNT;i++){
-		//pw = eeprom_read_byte(&saved[i]);
+		pw = eeprom_read_byte(i);
 		if(pw < SERVO_MIN_PULSE || pw > SERVO_MAX_PULSE){
 			pw = (SERVO_MAX_PULSE + SERVO_MIN_PULSE) /2;
 		}
@@ -217,7 +238,7 @@ void init_channels(){
 
 }
 
-/* inline void execute(uint8_t cmd){
+ inline void execute(uint8_t cmd){
 	register uint8_t i;
 	switch(cmd){
 	case I2C_RESET:
@@ -231,13 +252,12 @@ void init_channels(){
 	case I2C_SAVE_STARTPOS:
 		CLR(TIMSK, OCIE1A);
 		for(i=0;i<SERVO_AMOUNT;i++){
-			eeprom_write_byte(&saved[i], ServoChannel[i].stop);
+			eeprom_write_byte(i, ServoChannel[i].stop);
 		}
 		SET(TIMSK, OCIE1A);
 		break;
 	}
 }
- */
 
 //----------------------------------------------------------------------------
 //MAIN
@@ -264,23 +284,6 @@ int main() {
 while(1){
 	if(!reset) wdt_reset();
 	handleI2C();
-	/*if(new_buffer){
-		new_buffer=0;
-		if(!command){
-			uint8_t i;
-			for(i=0;i<BUFLEN_SERVO_DATA;i++){
-				if (recv[i] == SLOW_MINUS){
-					if (ServoChannel[i].stop < SERVO_MAX_PULSE) ServoChannel[i].stop--;
-				}else if(recv[i]== SLOW_PLUS){
-					if (ServoChannel[i].stop > SERVO_MIN_PULSE) ServoChannel[i].stop--;
-				}else {
-					ServoChannel[i].stop = recv[i];
-				}
-			}	
-		}else{
-			execute(command);
-		}
-	}*/
 	
 	
 	}//main loop end
