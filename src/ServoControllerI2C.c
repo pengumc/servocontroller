@@ -22,7 +22,7 @@
 Timer1 triggers an interrupt on an interval slightly larger than the maximum
 pulsewidth of the servo-signals (so a bit more than 0.002 ms).
 On this interrupt, TWO servo channels are set high and 
-timer0 is started (much faster than timer1). Timer0 also triggers an interrupt.
+timer0 is started (much faster than timer1). Timer0 also triggers an interrupt
 Each interrupt, a counter (Tic) is increased which represents a timeframe.
 When the counter equals a high channel's 'stop' variable (Stop1 or Stop2),
 the channel is pulled low. 
@@ -34,6 +34,7 @@ the RemainingTime till the period is loaded into the timer.
 #include <avr/io.h> 
 #include <avr/interrupt.h>
 #include <avr/wdt.h>
+#include <avr/eeprom.h>
 #include "i2c_header.h"
 
 #define SET(x,y) (x|=(1<<y))
@@ -70,12 +71,14 @@ typedef struct struct_multiservo{
 	uint8_t pin;
 } ServoChannel_type;
 
-//-----------------------------------------------------------------------------
+uint16_t EEMEM saved[SERVO_AMOUNT];
+//----------------------------------------------------------------------------
 //GlobalS
-//-----------------------------------------------------------------------------
+//----------------------------------------------------------------------------
 void (*jump_to_boot)(void) = 0x0C00;
 uint8_t Index; //the current servochannel we're handling
 ServoChannel_type ServoChannel[SERVO_AMOUNT];
+uint16_t EEMEM saved[SERVO_AMOUNT]; //array in eeprom to save the starting pos
 uint8_t Stop1; //variables to hold the time at which to lower the channel
 uint8_t Stop2;
 uint8_t Tic; //timeframe counter
@@ -90,9 +93,9 @@ uint8_t tran[BUFLEN_ACC_DATA] = {0x12};
 uint8_t new_buffer=0;
 uint8_t timing=0;
 uint8_t reset=0;
-//-----------------------------------------------------------------------------
+//----------------------------------------------------------------------------
 //Functions
-//-----------------------------------------------------------------------------
+//----------------------------------------------------------------------------
 inline void init_I2C(){
   //load slave address
  TWAR = (0x01<<1); //we're using address 0x01 
@@ -175,33 +178,34 @@ inline void init_servo_timers(void){
 	OCR0 = 250;
 }
 
-inline void init_channels(uint8_t pw){
+inline void init_channels(){
 //you need to set your own DDR
 	register uint8_t i;
 	for(i=0;i<8;i++){
 		ServoChannel[i].port = _SFR_IO_ADDR(SERVO_PORT_FIRST8);
 		ServoChannel[i].pin = i;
-		ServoChannel[i].stop =pw;
-		recv[i] = pw;
+		ServoChannel[i].stop =saved[i];
+		recv[i] = saved[i];
 	}
 	for(i=8;i<SERVO_AMOUNT;i++){
 		ServoChannel[i].port = _SFR_IO_ADDR(SERVO_PORT_SECOND8);
 		ServoChannel[i].pin = i - 6;
-		ServoChannel[i].stop = pw;
-		recv[i]=pw;
+		ServoChannel[i].stop = saved[i];
+		recv[i]=saved[i];
 	}
 
 }
 
-//-----------------------------------------------------------------------------
+
+//----------------------------------------------------------------------------
 //MAIN
-//-----------------------------------------------------------------------------
+//----------------------------------------------------------------------------
 //usb initialization
 int main() {
 	//I2c
 	init_I2C();
 	//initialize servo channels and timers
-	init_channels(((SERVO_MAX_PULSE + SERVO_MIN_PULSE) /2));
+	init_channels();
 	init_servo_timers();
 	SET(TIMSK, OCIE1A);
 	RemainingTime = SERVO_PERIOD - (SERVO_BASE * (SERVO_AMOUNT)/2);
@@ -212,13 +216,13 @@ int main() {
 	//start the signal generation
 	wdt_enable(WDTO_1S);
 	sei();
-//-----------------------------------------------------------------------------
+//----------------------------------------------------------------------------
 //MAIN LOOP
-//-----------------------------------------------------------------------------
+//----------------------------------------------------------------------------
 while(1){
 	if(!reset) wdt_reset();
 	handleI2C();
-/*	if(new_buffer){
+	if(new_buffer){
 		new_buffer=0;
 		uint8_t i;
 		for(i=0;i<BUFLEN_SERVO_DATA;i++){
@@ -230,7 +234,7 @@ while(1){
 				ServoChannel[i].stop = recv[i];
 			}
 		}
-	}*/
+	}
 	}//main loop end
 }//main end
 
@@ -268,11 +272,14 @@ ISR(TIMER1_COMPA_vect){
 		//update if necessary
 		if(timing){
 			if (recv[Index] == SLOW_PLUS){
-				if (ServoChannel[Index].stop < SERVO_MAX_PULSE) ServoChannel[Index].stop++;
+				if (ServoChannel[Index].stop < SERVO_MAX_PULSE){
+					ServoChannel[Index].stop++;
+				}
 				else ServoChannel[Index].stop = SERVO_MAX_PULSE;
 			}else if(recv[Index]== SLOW_MINUS){
-				if (ServoChannel[Index].stop > SERVO_MIN_PULSE) ServoChannel[Index].stop--;
-				else ServoChannel[Index].stop = SERVO_MIN_PULSE;
+				if (ServoChannel[Index].stop > SERVO_MIN_PULSE) {
+					ServoChannel[Index].stop--;
+				}else ServoChannel[Index].stop = SERVO_MIN_PULSE;
 			}else {
 				ServoChannel[Index].stop = recv[Index];
 			}
@@ -284,11 +291,13 @@ ISR(TIMER1_COMPA_vect){
 		if(timing){
 			Index++;
 			if (recv[Index] == SLOW_PLUS){
-				if (ServoChannel[Index].stop < SERVO_MAX_PULSE) ServoChannel[Index].stop++;
-				else ServoChannel[Index].stop = SERVO_MAX_PULSE;
+				if (ServoChannel[Index].stop < SERVO_MAX_PULSE){
+					ServoChannel[Index].stop++;
+				}else ServoChannel[Index].stop = SERVO_MAX_PULSE;
 			}else if(recv[Index]== SLOW_MINUS){
-				if (ServoChannel[Index].stop > SERVO_MIN_PULSE) ServoChannel[Index].stop--;
-				else ServoChannel[Index].stop = SERVO_MIN_PULSE;
+				if (ServoChannel[Index].stop > SERVO_MIN_PULSE){
+					ServoChannel[Index].stop--;
+				}else ServoChannel[Index].stop = SERVO_MIN_PULSE;
 			}else {
 				ServoChannel[Index].stop = recv[Index];
 			}
