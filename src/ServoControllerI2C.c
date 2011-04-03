@@ -66,19 +66,18 @@ the RemainingTime till the period is loaded into the timer.
 
 
 typedef struct struct_multiservo{
-	uint16_t stop;
+	uint8_t stop;
 	uint8_t port;
 	uint8_t pin;
 } ServoChannel_type;
 
-uint16_t EEMEM saved[SERVO_AMOUNT];
 //----------------------------------------------------------------------------
 //GlobalS
 //----------------------------------------------------------------------------
 void (*jump_to_boot)(void) = 0x0C00;
 uint8_t Index; //the current servochannel we're handling
 ServoChannel_type ServoChannel[SERVO_AMOUNT];
-uint16_t EEMEM saved[SERVO_AMOUNT]; //array in eeprom to save the starting pos
+uint8_t EEMEM saved[SERVO_AMOUNT]; //array in eeprom to save the starting pos
 uint8_t Stop1; //variables to hold the time at which to lower the channel
 uint8_t Stop2;
 uint8_t Tic; //timeframe counter
@@ -87,12 +86,12 @@ uint16_t RemainingTime; //time left after all servo's have been handled
 //i2c
 uint8_t r_index =0;
 uint8_t recv[BUFLEN_SERVO_DATA]; //buffer to store received bytes
-
 uint8_t t_index=0;
-uint8_t tran[BUFLEN_ACC_DATA] = {0x12}; 
+uint8_t tran[BUFLEN_ACC_DATA];
 uint8_t new_buffer=0;
 uint8_t timing=0;
 uint8_t reset=0;
+uint8_t command = 0;
 //----------------------------------------------------------------------------
 //Functions
 //----------------------------------------------------------------------------
@@ -117,7 +116,13 @@ void handleI2C(){ //slave version
       break;
     case 0x80:  //a byte was received, store it and 
                 //setup the buffer to recieve another
-      recv[r_index] = TWDR;
+			recv[r_index] = TWDR;
+			//check if the received buffer is a command
+			if (r_index == 0){
+				command = TWDR;
+			} else{
+				if(TWDR != command) command = 0;
+			}
       r_index++;
       //don't ack next data if buffer is full
       if(r_index >= BUFLEN_SERVO_DATA){
@@ -178,12 +183,12 @@ inline void init_servo_timers(void){
 	OCR0 = 250;
 }
 
-inline void init_channels(){
+void init_channels(){
 //you need to set your own DDR
 	register uint8_t i;
-	uint16_t pw;
+	uint8_t pw;
 	for(i=0;i<8;i++){
-		pw = eeprom_read_word(&saved[i]);
+		pw = eeprom_read_byte(&saved[i]);
 		if(pw < SERVO_MIN_PULSE || pw > SERVO_MAX_PULSE){
 			pw = (SERVO_MAX_PULSE + SERVO_MIN_PULSE) /2;
 		}
@@ -193,7 +198,7 @@ inline void init_channels(){
 		recv[i] = pw;
 	}
 	for(i=8;i<SERVO_AMOUNT;i++){
-		pw = eeprom_read_word(&saved[i]);
+		pw = eeprom_read_byte(&saved[i]);
 		if(pw < SERVO_MIN_PULSE || pw > SERVO_MAX_PULSE){
 			pw = (SERVO_MAX_PULSE + SERVO_MIN_PULSE) /2;
 		}
@@ -203,6 +208,27 @@ inline void init_channels(){
 		recv[i]=pw;
 	}
 
+}
+
+inline void execute(uint8_t cmd){
+	register uint8_t i;
+	switch(cmd){
+	case I2C_RESET:
+		reset=1;
+		break;
+	case I2C_LOAD_STARTPOS:
+		CLR(TIMSK, OCIE1A);
+		init_channels();
+		SET(TIMSK, OCIE1A);
+		break;
+	case I2C_SAVE_STARTPOS:
+		CLR(TIMSK, OCIE1A);
+		for(i=0;i<SERVO_AMOUNT;i++){
+			eeprom_write_byte(&saved[i], ServoChannel[i].stop);
+		}
+		SET(TIMSK, OCIE1A);
+		break;
+	}
 }
 
 
@@ -233,17 +259,23 @@ while(1){
 	handleI2C();
 	if(new_buffer){
 		new_buffer=0;
-		uint8_t i;
-		for(i=0;i<BUFLEN_SERVO_DATA;i++){
-			if (recv[i] == SLOW_MINUS){
-				if (ServoChannel[i].stop < SERVO_MAX_PULSE) ServoChannel[i].stop--;
-			}else if(recv[i]== SLOW_PLUS){
-				if (ServoChannel[i].stop > SERVO_MIN_PULSE) ServoChannel[i].stop--;
-			}else {
-				ServoChannel[i].stop = recv[i];
-			}
+		if(!command){
+			uint8_t i;
+			for(i=0;i<BUFLEN_SERVO_DATA;i++){
+				if (recv[i] == SLOW_MINUS){
+					if (ServoChannel[i].stop < SERVO_MAX_PULSE) ServoChannel[i].stop--;
+				}else if(recv[i]== SLOW_PLUS){
+					if (ServoChannel[i].stop > SERVO_MIN_PULSE) ServoChannel[i].stop--;
+				}else {
+					ServoChannel[i].stop = recv[i];
+				}
+			}	
+		}else{
+			execute(command);
 		}
 	}
+	
+	
 	}//main loop end
 }//main end
 
