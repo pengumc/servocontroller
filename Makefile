@@ -12,12 +12,12 @@ NAME = ServoControllerI2C
 
 
 OBJECTS =  $(NAME).o 
-CFLAGS = -DF_CPU=$(F_CPU) -std=c99 -Wall -O2 -mmcu=$(MMCU) -I.
+CFLAGS = -DF_CPU=$(F_CPU) -std=c99 -Wall -Os -mmcu=$(MMCU) -I.
 CC = avr-gcc
 SIZE = avr-size
 OBJCOPY = avr-objcopy
 
-vpath %.c ./src/
+vpath %c ./src/
 
 .PHONY: all clean test
 all: bin/$(NAME).hex
@@ -26,12 +26,10 @@ all: bin/$(NAME).hex
 #rebuild everything!
 force: clean all
 
-#bin/$(NAME).hex: $(NAME).elf
-#	$(OBJCOPY) -O ihex $(NAME).elf bin/$(NAME).hex
-#	rm $(OBJECTS) $(NAME).elf
-
-bin/$(NAME).hex: src/$(NAME).c
-	$(CC) $(CFLAGS) -o bin/$(NAME).hex src/$(NAME).c
+bin/$(NAME).hex: $(NAME).elf
+	rm bin/$(NAME).hex
+	$(OBJCOPY) -O ihex $(NAME).elf bin/$(NAME).hex
+	rm $(OBJECTS) $(NAME).elf
 	
 $(NAME).elf: $(OBJECTS)
 	$(CC) $(CFLAGS) -o $(NAME).elf $(OBJECTS)
@@ -48,7 +46,7 @@ clean:
 	rm -f $(OBJECTS) $(NAME).elf
 
 program: bin\$(NAME).hex
-	avrdude -c $(AVRDUDE_PROGRAMMERID) -p $(AVRDUDE_MCU) -U flash:w:bin\$(NAME).hex
+	avrdude -c $(AVRDUDE_PROGRAMMERID) -p $(AVRDUDE_MCU) -U flash:w:bin/$(NAME).hex
 
 test:
 	avrdude -c $(AVRDUDE_PROGRAMMERID) -p $(AVRDUDE_MCU) -v

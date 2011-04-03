@@ -29,13 +29,21 @@ the channel is pulled low.
 On the next interrupt from timer1, the next TWO channels are set high,
 and the cycle repeats.
 After the last TWO channels are set high and timer1 has another intterupt,
-the RemainingTime till the period is loaded into the timer.
+the RemainingTime until the next period is loaded into the timer.
 */
+#define SERVO_AMOUNT 12 
+//even only, up to 16.
+//You'll have to edit 'init_channels()' as well when changing this.
+
+
 #include <avr/io.h> 
 #include <avr/interrupt.h>
-#include <avr/wdt.h>
-#include <avr/eeprom.h>
 #include "i2c_header.h"
+#include <avr/wdt.h>
+//#include <avr/eeprom.h> //won't compile?
+//uint8_t EEMEM saved[SERVO_AMOUNT]; 
+//	array in eeprom to save the starting pos
+
 
 
 
@@ -52,9 +60,6 @@ the RemainingTime till the period is loaded into the timer.
 //you can use these two in your 'init_channels()' function
 //or you can define 16 unique ports if you want.
 
-#define SERVO_AMOUNT 12 
-//even only, up to 16.
-//You'll have to edit 'init_channels()' as well when changing this.
 
 //used by timer0 (12Mhz/250)
 #define SERVO_MAX_PULSE 96 // 200 us
@@ -65,7 +70,7 @@ the RemainingTime till the period is loaded into the timer.
 
 #define SERVO_BASE 96  //205 us
 //this is the time till the next TWO servo channels are handled
-uint8_t EEMEM saved[SERVO_AMOUNT]; //array in eeprom to save the starting pos
+
 
 typedef struct struct_multiservo{
 	uint8_t stop;
@@ -188,9 +193,9 @@ inline void init_servo_timers(void){
 void init_channels(){
 //you need to set your own DDR
 	register uint8_t i;
-	uint8_t pw;
+	uint8_t pw=72;
 	for(i=0;i<8;i++){
-		pw = eeprom_read_byte(&saved[i]);
+		//pw = eeprom_read_byte(&saved[i]);
 		if(pw < SERVO_MIN_PULSE || pw > SERVO_MAX_PULSE){
 			pw = (SERVO_MAX_PULSE + SERVO_MIN_PULSE) /2;
 		}
@@ -200,7 +205,7 @@ void init_channels(){
 		recv[i] = pw;
 	}
 	for(i=8;i<SERVO_AMOUNT;i++){
-		pw = eeprom_read_byte(&saved[i]);
+		//pw = eeprom_read_byte(&saved[i]);
 		if(pw < SERVO_MIN_PULSE || pw > SERVO_MAX_PULSE){
 			pw = (SERVO_MAX_PULSE + SERVO_MIN_PULSE) /2;
 		}
@@ -212,7 +217,7 @@ void init_channels(){
 
 }
 
-inline void execute(uint8_t cmd){
+/* inline void execute(uint8_t cmd){
 	register uint8_t i;
 	switch(cmd){
 	case I2C_RESET:
@@ -232,7 +237,7 @@ inline void execute(uint8_t cmd){
 		break;
 	}
 }
-
+ */
 
 //----------------------------------------------------------------------------
 //MAIN
@@ -259,7 +264,7 @@ int main() {
 while(1){
 	if(!reset) wdt_reset();
 	handleI2C();
-	if(new_buffer){
+	/*if(new_buffer){
 		new_buffer=0;
 		if(!command){
 			uint8_t i;
@@ -275,7 +280,7 @@ while(1){
 		}else{
 			execute(command);
 		}
-	}
+	}*/
 	
 	
 	}//main loop end
