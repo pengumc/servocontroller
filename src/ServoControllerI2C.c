@@ -31,19 +31,12 @@ and the cycle repeats.
 After the last TWO channels are set high and timer1 has another intterupt,
 the RemainingTime until the next period is loaded into the timer.
 */
-#define SERVO_AMOUNT 12 
-//even only, up to 16.
-//You'll have to edit 'init_channels()' as well when changing this.
-
 
 #include <avr/io.h> 
 #include <avr/interrupt.h>
 #include "i2c_header.h"
 #include <avr/wdt.h>
 //#include <avr/eeprom.h> //won't compile?
-
-
-
 
 #define SET(x,y) (x|=(1<<y))
 #define CLR(x,y) (x&=(~(1<<y)))
@@ -52,6 +45,10 @@ the RemainingTime until the next period is loaded into the timer.
 
 #define SLOW_MINUS 22
 #define SLOW_PLUS 33
+
+#define SERVO_AMOUNT 12 
+//even only, up to 16.
+//You'll have to edit 'init_channels()' as well when changing this.
 
 #define SERVO_PORT_FIRST8 PORTA
 #define SERVO_PORT_SECOND8 PORTC
@@ -93,9 +90,8 @@ uint16_t RemainingTime; //time left after all servo's have been handled
 uint8_t r_index =0;
 uint8_t recv[BUFLEN_SERVO_DATA]; //buffer to store received bytes
 uint8_t t_index=0;
-uint8_t tran[BUFLEN_ACC_DATA];
+uint8_t tran[BUFLEN_SERVO_DATA];
 uint8_t new_cmd=0;
-uint8_t timing=0;
 uint8_t reset=0;
 uint8_t command = 0;
 
@@ -137,7 +133,6 @@ void handleI2C(){ //slave version
 					recv[r_index]=TWDR;
 				}
 				if(new_cmd != TWDR) new_cmd = 0;
-				
 			}
       r_index++;
       //don't ack next data if buffer is full
@@ -163,15 +158,17 @@ void handleI2C(){ //slave version
 //---------------Slave Transmitter--------------------------------
     case 0xA8:  //SLA R received, prep for transmission
 		            //and load first data
+			//since we're just sending the servo position bytes
+			//we might as well use ServoChannel[].stop instead of tran[]
       t_index=1;
-      TWDR = tran[0];
+      TWDR = ServoChannel[0].stop;
       TWACK;
       break;
     case 0xB8:  //data transmitted and acked by master, load next
-      TWDR = tran[t_index];
+      TWDR = ServoChannel[t_index].stop;
       t_index++;
       //designate last byte if we're at the end of the buffer
-      if(t_index >= BUFLEN_ACC_DATA) TWNACK;
+      if(t_index >= BUFLEN_SERVO_DATA) TWNACK;
       else TWACK;
       break;
     case 0xC8: //last byte send and acked by master
@@ -250,8 +247,7 @@ void init_channels(){
 
  inline void execute(){
 	register uint8_t i;
-	//SET(PORTD,PD3); //green	
-						TOG(PORTD,PD3);
+	SET(PORTD,PD3); //green	
 
 	switch(command){
 	case I2C_RESET:
@@ -271,7 +267,7 @@ void init_channels(){
 		break;
 	}
 	command=0;
-	//CLR(PORTD,PD3);
+	CLR(PORTD,PD3);
 }
 
 //----------------------------------------------------------------------------
