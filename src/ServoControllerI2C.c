@@ -37,6 +37,8 @@ the RemainingTime till the period is loaded into the timer.
 #include <avr/eeprom.h>
 #include "i2c_header.h"
 
+
+
 #define SET(x,y) (x|=(1<<y))
 #define CLR(x,y) (x&=(~(1<<y)))
 #define CHK(x,y) (x&(1<<y)) 
@@ -63,7 +65,7 @@ the RemainingTime till the period is loaded into the timer.
 
 #define SERVO_BASE 96  //205 us
 //this is the time till the next TWO servo channels are handled
-
+uint8_t EEMEM saved[SERVO_AMOUNT]; //array in eeprom to save the starting pos
 
 typedef struct struct_multiservo{
 	uint8_t stop;
@@ -77,7 +79,7 @@ typedef struct struct_multiservo{
 void (*jump_to_boot)(void) = 0x0C00;
 uint8_t Index; //the current servochannel we're handling
 ServoChannel_type ServoChannel[SERVO_AMOUNT];
-uint8_t EEMEM saved[SERVO_AMOUNT]; //array in eeprom to save the starting pos
+
 uint8_t Stop1; //variables to hold the time at which to lower the channel
 uint8_t Stop2;
 uint8_t Tic; //timeframe counter
