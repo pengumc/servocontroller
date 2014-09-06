@@ -12,7 +12,7 @@ NAME = ServoControllerI2C
 
 
 OBJECTS =  $(NAME).o 
-CFLAGS = -DF_CPU=$(F_CPU) -std=c99 -Wall -Os -mmcu=$(MMCU) -I.
+CFLAGS = --save-temps -DF_CPU=$(F_CPU) -std=c99 -Wall -Os -mmcu=$(MMCU) -I.
 CC = avr-gcc
 SIZE = avr-size
 OBJCOPY = avr-objcopy
@@ -29,7 +29,7 @@ force: clean all
 bin/$(NAME).hex: $(NAME).elf
 	rm bin/$(NAME).hex
 	$(OBJCOPY) -O ihex $(NAME).elf bin/$(NAME).hex
-	rm $(OBJECTS) $(NAME).elf
+	#rm $(OBJECTS) $(NAME).elf
 	
 $(NAME).elf: $(OBJECTS)
 	$(CC) $(CFLAGS) -o $(NAME).elf $(OBJECTS)
