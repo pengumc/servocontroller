@@ -12,7 +12,7 @@ NAME = ServoControllerI2C
 
 
 OBJECTS =  $(NAME).o 
-CFLAGS = --save-temps -DF_CPU=$(F_CPU) -std=c99 -Wall -O0 -mmcu=$(MMCU) -I.
+CFLAGS = --save-temps -DF_CPU=$(F_CPU) -std=c99 -Wall -Os -mmcu=$(MMCU) -I.
 CC = avr-gcc
 SIZE = avr-size
 OBJCOPY = avr-objcopy

@@ -52,8 +52,11 @@
 
 #define SERVO_AMOUNT 12
 
-#define ASM1700LO 0x22
-#define ASM1700HI 0x06
+#define ASM400HI 0x03
+#define ASM400LO 0xc0
+#define ASM1700LO 0x58
+#define ASM1700HI 0x02
+
 
 typedef struct {
   uint16_t stop;
@@ -71,22 +74,27 @@ void init_channels() {
   for (i = 0; i < 8; ++i) {
     servo_channels[i].stop = 0;
     servo_channels[i].port = _SFR_IO_ADDR(PORTA);
-    servo_channels[i].pin = i;
+    servo_channels[i].pin = ~(1<<i);
   }
   for (i = 8; i < SERVO_AMOUNT; ++i) {
     servo_channels[i].stop = 0;
     servo_channels[i].port = _SFR_IO_ADDR(PORTC);
-    servo_channels[i].pin = i - 6;
+    servo_channels[i].pin = ~(1<<(i - 6));
   }
   DDRA = 0xFF;
   DDRC |= (1<<PC2)|(1<<PC3)|(1<<PC4)|(1<<PC5);
 
   servo_channels[0].port = _SFR_IO_ADDR(PORTD);
   servo_channels[0].pin = 5;
-  servo_channels[0].stop =((ASM1700HI<<8)|(ASM1700LO)) - 1015;
-  // base value - (x/T_clk) / 13
+  servo_channels[0].stop =((ASM1700HI<<8)|(ASM1700LO)) - 212; // 1000 us
+  // base value - (x/T_clk) / 34
   // where x is the time you want added to 400us
+  servo_channels[1].stop =((ASM1700HI<<8)|(ASM1700LO)) - 388; // 1500 us
+  servo_channels[2].stop =((ASM1700HI<<8)|(ASM1700LO)) - 564; // 2000 us
+  
+  // TODO add offsets per pin based on their pos in cycle
 }
+
 
 // -----------------------------------------------------------------------------
 //                                                                   init_timers
@@ -156,62 +164,132 @@ ISR(TIMER0_COMP_vect){
     3 first cp skips 
     1 second cp
     1 brne, but r16 = r24 so don't branch
-    1 clear pin
+    2 clear pin
     3 jump somewhere
    ---
-    9
+    10
   
   counter != stop, r17 = r25 but r16 != r24
     3 first cp skips
     1 cp
     2 brne true, so branch to noclear2
    --- 
-    6 still needs 3 nops
+    6 still needs 4 nops
   
   count  != stop, r17 != r25
    1 fist cp doesn't skip
    3 jump to noclear1
   ---
-   4 still needs 5 nops
+   4 still needs 6 nops
    
    total loopcycles = 13 (2 for sbiw, 2 for branch)
   */
   TOG(PORTD, PD3);
   __asm__(
           "CLI \n\t"
-          "SBI 0x12, 5 \n\t"
+          "LDI r24, 0xff \n\t"
+          "OUT 0x1B, r24 \n\t"
           // wait 400 us
-          "LDI r24, %1 \n\t"  // 1
-          "LDI r25, %0 \n\t"  // 2
-          "loopje: \n\t"  
+          "LDI r25, %0 \n\t"
+          "LDI r24, %1 \n\t"
+         "loopje: \n\t"  
           "WDR \n\t"
-          "SBIW r24, 0x01 \n\t" // 2
-          "BRNE loopje \n\t"  // 1 (2 on true)
+          "SBIW r24, 0x01 \n\t"
+          "BRNE loopje \n\t"
           // load counter value for 1700 us
-          "LDI r24, %3 \n\t"
           "LDI r25, %2 \n\t"
+          "LDI r24, %3 \n\t"
           "LD r16, %a4 \n\t"   // 1
           "LDD r17, %a4+1 \n\t"// 1
-          "checkloop: \n\t" 
-          "CPSE r17, r25 \n\t" // 1 (3 on equal since jmp is 2 words)
-          "JMP noclear1 \n\t"  // 3
+          "LDD r18, %a4+4 \n\t"   // 1
+          "LDD r19, %a4+5 \n\t"// 1
+          "LDD r20, %a4+8 \n\t"   // 1
+          "LDD r21, %a4+9 \n\t"// 1
+
+         "checkloop: \n\t" 
+          // PIN A0
+          "CPSE r17, r25 \n\t"  // from here
+          "JMP noclear1A \n\t"  
           "CP r16, r24 \n\t"
-          "BRNE noclear2 \n\t" //
-          "CBI 0x12, 5 \n\t"   // 1
-          "JMP finalpart \n\t"
-          "noclear1: \n\t"
-          "nop \n\t"  // 1
-          "nop \n\t"  // 1
-          "noclear2: \n\t"
-          "nop \n\t"  // 1
-          "nop \n\t"  // 1
-          "nop \n\t"  // 1
-          "finalpart: \n\t"
-          "SBIW r24, 0x01 \n\t" // 2
-          "BRNE checkloop \n\t" // 1 (2 on true)
-          
-          "CBI 0x12, 5 \n\t" 
+          "BRNE noclear1B \n\t" 
+          "CBI 0x1B, 0 \n\t"   
+          "JMP finalpart1 \n\t"
+         "noclear1A: \n\t"
+          "nop \n\t" 
+          "nop \n\t" 
+         "noclear1B: \n\t"
+          "nop \n\t" 
+          "nop \n\t" 
+          "nop \n\t" 
+          "nop \n\t" 
+          "finalpart1: \n\t"  // to here is 9 cycles, always.
+          //PIN A1
+          "CPSE r19, r25 \n\t"
+          "JMP noclear2A \n\t"
+          "CP r18, r24 \n\t"
+          "BRNE noclear2B \n\t"
+          "CBI 0x1B, 1 \n\t"
+          "JMP finalpart2 \n\t"
+         "noclear2A: \n\t"
+          "nop \n\t"
+          "nop \n\t"
+         "noclear2B: \n\t"
+          "nop \n\t"
+          "nop \n\t"
+          "nop \n\t"
+          "nop \n\t"
+          "finalpart2: \n\t"
+          //PIN A2
+          "CPSE r21, r25 \n\t"
+          "JMP noclear3A \n\t"
+          "CP r20, r24 \n\t"
+          "BRNE noclear3B \n\t"
+          "CBI 0x1B, 2 \n\t"
+          "JMP finalpart3 \n\t"
+         "noclear3A: \n\t"
+          "nop \n\t"
+          "nop \n\t"
+         "noclear3B: \n\t"
+          "nop \n\t"
+          "nop \n\t"
+          "nop \n\t"
+          "nop \n\t"
+          "finalpart3: \n\t"
+
+          "SBIW r24, 0x01 \n\t"
+          "BRNE checkloop \n\t"
+
+          "OUT 0x1B, __zero_reg__ \n\t" 
           "SEI \n\t"
-  ::"M"(0x03),"M"(0xc0),"M"(0x06),"M"(0x22),"e"(&servo_channels[0]));
+  ::"M"(ASM400HI),"M"(ASM400LO),
+    "M"(ASM1700HI),"M"(ASM1700LO),
+    "e"(&servo_channels[0]));
   
+  /*
+  ports and pins can still be hardcoded i guess...
+  set timer to 200 Hz and do groups of 8?
+  stick to 12 for now, 4 groups of 3, OCR0 = 58
+    can't do that. need room for I2C
+    let's do 4 groups at OCR0 = 30 and then go from there
+  start of Interrupt, load index value
+  use index value to select start of loading points for stop values
+  also load ports and pins from mem...
+  setting a single port:
+  
+  2 LDD r30, %servo_channels+2 (aka port)
+  2 LDI r31, __zero_reg__
+  2 LDD r22, %servo_channels+3 (aka pin (already as ~(1<<pinno) ie a zero at pin#)
+  2 LDD r23 Z-2 ( PIN is 2 lower than PORT)
+  1 AND r22, r23
+  2 ST Z, r22
+ ---
+ 11
+ 
+ + do three times before starting loops
+ + LDD can only do positive, so store PIN instead of PORT
+ 
+ technically, there's already a proper counter at 12MHz called counter1
+ using that and checking the interrupt flag saves some cycles... but really
+ not that much (maybe 2?)
+  */
 }
