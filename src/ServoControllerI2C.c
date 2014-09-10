@@ -65,7 +65,10 @@
 #define REMAINING_TIME 115
 
 typedef struct {
-  uint16_t stop;
+  union {
+    uint16_t stop;
+    uint8_t stopbytes[2];
+  } servo;
   uint8_t port;
   uint8_t pin;
 } ServoChannel_t;
@@ -83,36 +86,34 @@ uint8_t new_cmd=0;
 uint8_t reset=0;
 uint8_t command = 0;
 
-
 // -----------------------------------------------------------------------------
 //                                                                 init_channels
 // -----------------------------------------------------------------------------
 inline void init_channels() {
   // hardcoded ports and pins
-  // use _SFR_IO_ADDR(PORTA) + 30 or _SFR_IO_ADDR(PINA) + 32
-  // and ~(1<<bitno) to indicate bitno
+  // use _SFR_IO_ADDR(PORTA) + 32 for ports 
+  // and ~(1<<pinnumber) for pins
+  // servo.stop = base value - (x * 12MHz) / 22
+  //    where x is the time you want added to 400us
+
   uint8_t i = 0;
   for (i = 0; i < 8; ++i) {
-    servo_channels[i].stop = ((ASM1700HI<<8)|(ASM1700LO)) - MIDPULSE;
+    servo_channels[i].servo.stop = ((ASM1700HI<<8)|(ASM1700LO)) - MIDPULSE;
     servo_channels[i].port = _SFR_IO_ADDR(PORTA) + 32;
     servo_channels[i].pin = ~(1<<i);
   }
   for (i = 8; i < SERVO_AMOUNT; ++i) {
-    servo_channels[i].stop = ((ASM1700HI<<8)|(ASM1700LO)) - MIDPULSE;
+    servo_channels[i].servo.stop = ((ASM1700HI<<8)|(ASM1700LO)) - MIDPULSE;
     servo_channels[i].port = _SFR_IO_ADDR(PORTC) + 32;
     servo_channels[i].pin = ~(1<<(i - 6));
   }
   DDRA = 0xFF;
   PORTA = 0x00;
   DDRC |= (1<<PC2)|(1<<PC3)|(1<<PC4)|(1<<PC5);
-  // DDRC = 0xff;
   PORTC &= ~((1<<PC2)|(1<<PC3)|(1<<PC4)|(1<<PC5));
-  // PORTC = 0x00;
 
-  servo_channels[0].stop = ((ASM1700HI<<8)|(ASM1700LO)) - 328;
+  servo_channels[0].servo.stop = ((ASM1700HI<<8)|(ASM1700LO)) - 328;
   
-  // base value - (x/T_clk) / 22
-  // where x is the time you want added to 400us
 
   // TODO add offsets per pin based on their pos in cycle
 }
@@ -162,20 +163,118 @@ inline void heartbeat() {
   }
 }
 
+// -----------------------------------------------------------------------------
+//                                                                    handle_I2C
+// -----------------------------------------------------------------------------
+inline void handle_I2C(){ // slave version
+  // stop values for servos are sent lsb first
+
+  // check if we need to do any software actions
+  if (CHK(TWCR,TWINT)) {
+    SET(PORTD, PD5);
+    switch(TW_STATUS){
+// --------------Slave receiver------------------------------------
+    // SLA_W received and acked, prepare for data receiving
+    case 0x60:  
+      TWACK;
+      r_index =0;
+      break;
+    case 0x80:  // a byte was received, store it and 
+                // setup the buffer to recieve another
+      // check if the received buffer is a command
+      if (r_index ==0) {
+        if (TWDR > ASM1700HI) {
+          new_cmd = TWDR;
+        } else {
+          recv[r_index] = TWDR;
+          new_cmd =0;
+        }
+      } 
+      if (r_index>0) {
+        if (new_cmd == 0) {
+          recv[r_index]= TWDR;
+        }
+        if (new_cmd != TWDR) new_cmd = 0;
+      }
+      r_index++;
+      // don't ack next data if buffer is full
+      if (r_index >= BUFLEN_SERVO_DATA) {
+        TWNACK;
+        command = new_cmd;
+      } else {
+    TWACK;
+   }
+   break;
+    case 0x68:  // adressed as slave while in master mode.
+              // should never happen, better reset;
+      reset=1;
+    case 0xA0: // Stop or rep start, reset state machine
+      TWACK;
+      break;
+// -------------- error recovery ----------------------------------
+    case 0x88: // data received  but not acked
+      // should not happen if the master is behaving as expected
+      // switch to not adressed mode
+      TWACK;
+      break;
+// ---------------Slave Transmitter--------------------------------
+    case 0xA8:  // SLA R received, prep for transmission
+                // and load first data
+      t_index=1;
+      TWDR = servo_channels[0].servo.stopbytes[0];
+      TWACK;
+      break;
+    case 0xB8:  // data transmitted and acked by master, load next
+      TWDR = servo_channels[t_index>>1].servo.stopbytes[1-t_index%2];
+      t_index++;
+      // designate last byte if we're at the end of the buffer
+      if(t_index >= BUFLEN_SERVO_DATA) TWNACK;
+      else TWACK;
+      break;
+    case 0xC8: // last byte send and acked by master
+    // last bytes should not be acked, ignore till start/stop
+      // reset=1;
+    case 0xC0: // last byte send and nacked by master 
+    // (as should be)
+      TWACK;
+      break;
+// --------------------- bus error---------------------------------
+    // illegal start or stop received, reset the I2C hardware
+    case 0x00: 
+      TWRESET;
+      break;
+    }
+  } else {
+    CLR(PORTD, PD5);
+  }
+}
+
+
 // =============================================================================
 //                                                                          main
 // =============================================================================
 int main() {
-  init_channels();
   DDRD = (1<<PD5)|(1<<PD3);
   PORTD = (0<<PD5)|(0<<PD3);  // red , green
+  init_channels();
   init_timers();
   group_ptr = &servo_channels[0];
-  //~ init_I2C();
+  init_I2C();
   wdt_enable(WDTO_1S);
   while(1) {
-   if (!reset) wdt_reset();
-   heartbeat();
+    if (!reset) {
+      wdt_reset();
+      heartbeat();
+      handle_I2C();
+      if (r_index == BUFLEN_SERVO_DATA) {
+        uint8_t i = 0;
+        for (i = 0; i < BUFLEN_SERVO_DATA; ++i) {
+          servo_channels[i>>1].servo.stopbytes[1-i%2] = recv[i];
+        }
+      }
+    } else { 
+      SET(PORTD, PD5);
+    }
   }
 }
 
