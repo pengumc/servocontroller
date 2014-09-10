@@ -45,6 +45,8 @@
 #include <avr/wdt.h>
 #include <avr/interrupt.h>
 
+#include "i2c_header.h"
+
 #define SET(x,y) (x|=(1<<y))
 #define CLR(x,y) (x&=(~(1<<y)))
 #define CHK(x,y) (x&(1<<y))
@@ -56,7 +58,11 @@
 #define ASM400LO 0xC0
 #define ASM1700LO 0xA0
 #define ASM1700HI 0x03
+// 1100e-6 * 12e6 / 22 = 600
+#define MIDPULSE 600
 
+#define SHORT_INTERVAL 30
+#define REMAINING_TIME 115
 
 typedef struct {
   uint16_t stop;
@@ -66,22 +72,33 @@ typedef struct {
 
 ServoChannel_t servo_channels[SERVO_AMOUNT];
 volatile ServoChannel_t* group_ptr;
+uint8_t servo_cycle_counter = 0;
+
+//i2c
+uint8_t r_index =0;
+uint8_t recv[BUFLEN_SERVO_DATA]; // buffer to store received bytes
+uint8_t t_index=0;
+uint8_t tran[BUFLEN_SERVO_DATA];
+uint8_t new_cmd=0;
+uint8_t reset=0;
+uint8_t command = 0;
+
 
 // -----------------------------------------------------------------------------
 //                                                                 init_channels
 // -----------------------------------------------------------------------------
-void init_channels() {
+inline void init_channels() {
   // hardcoded ports and pins
   // use _SFR_IO_ADDR(PORTA) + 30 or _SFR_IO_ADDR(PINA) + 32
   // and ~(1<<bitno) to indicate bitno
   uint8_t i = 0;
   for (i = 0; i < 8; ++i) {
-    servo_channels[i].stop = ((ASM1700HI<<8)|(ASM1700LO)) - i*55;
+    servo_channels[i].stop = ((ASM1700HI<<8)|(ASM1700LO)) - MIDPULSE;
     servo_channels[i].port = _SFR_IO_ADDR(PORTA) + 32;
     servo_channels[i].pin = ~(1<<i);
   }
   for (i = 8; i < SERVO_AMOUNT; ++i) {
-    servo_channels[i].stop = ((ASM1700HI<<8)|(ASM1700LO)) - i*55;
+    servo_channels[i].stop = ((ASM1700HI<<8)|(ASM1700LO)) - MIDPULSE;
     servo_channels[i].port = _SFR_IO_ADDR(PORTC) + 32;
     servo_channels[i].pin = ~(1<<(i - 6));
   }
@@ -94,13 +111,21 @@ void init_channels() {
 
   servo_channels[0].stop = ((ASM1700HI<<8)|(ASM1700LO)) - 328;
   
-  // servo_channels[0].stop =((ASM1700HI<<8)|(ASM1700LO)) - 327; // 1000 us
-  // base value - (x/T_clk) / 34
+  // base value - (x/T_clk) / 22
   // where x is the time you want added to 400us
-  // servo_channels[1].stop =((ASM1700HI<<8)|(ASM1700LO)) - 600; // 1500 us
-  // servo_channels[2].stop =((ASM1700HI<<8)|(ASM1700LO)) - 873; // 2000 us
 
   // TODO add offsets per pin based on their pos in cycle
+}
+
+
+// -----------------------------------------------------------------------------
+//                                                                      init_I2C
+// -----------------------------------------------------------------------------
+inline void init_I2C(){
+  // load slave address
+  TWAR = (0x01<<1); // we're using address 0x01 
+  // enable I2C hardware
+  TWCR = (1<<TWEN)|(1<<TWEA);
 }
 
 
@@ -111,54 +136,46 @@ void init_timers() {
   // using timer 0 (8 bit) with 1024 prescaler in CTC mode
   // to get about 50 Hz
   TCCR0 = (1<<WGM01)|(1<<CS02)|(1<<CS00);
-  OCR0 = 234u;  // (0.02 / (1/(12e6/1024)) = 234.375
+  OCR0 = SHORT_INTERVAL;
   SET(TIMSK, OCIE0);
   sei();
 }
 
 // -----------------------------------------------------------------------------
-//                                                                          main
+//                                                                     heartbeat
 // -----------------------------------------------------------------------------
+inline void heartbeat() {
+  /*
+   * 0  15 30  45 250
+   * 1  0  1   0  0   
+   */
+  if (servo_cycle_counter < 15) {
+    SET(PORTD, PD3);
+  } else if (servo_cycle_counter < 30) {
+    CLR(PORTD, PD3);
+  } else if (servo_cycle_counter < 45) {
+    SET(PORTD, PD3);
+  } else if (servo_cycle_counter < 100) {
+    CLR(PORTD, PD3);
+  } else {
+    servo_cycle_counter = 255;
+  }
+}
+
+// =============================================================================
+//                                                                          main
+// =============================================================================
 int main() {
   init_channels();
-  DDRD = 0xff;//(1<<PD5)|(1<<PD3);
-  PORTD = (0<<PD5)|(0<<PD3); // red , green
+  DDRD = (1<<PD5)|(1<<PD3);
+  PORTD = (0<<PD5)|(0<<PD3);  // red , green
   init_timers();
   group_ptr = &servo_channels[0];
-
-  /*
-  - set all ddr
-  - start timer for 50 Hz
-
-  - 50 hz ISR
-  - enter assembly
-  - cli
-  - set all pins high
-  - wait 400 us
-  - set counter to 1700 us
-  - # loop
-  - check each pin counter, set to 0 if needed counters for each pin need to be
-    offset individually. make sure setting and doing nothing takes the same
-    amount of cycles
-
-    cut into groups to reduce looptime? can be done after first implementation
-
-  - decrement counter
-  - if 0 exit assembly
-  - else jump to loop
-  - exit assembly
-  - sei
-  - exit ISR
-
-  - main loop:
-  - handle I2C
-  - clear wdt
-
-  */
+  //~ init_I2C();
   wdt_enable(WDTO_1S);
-
   while(1) {
-    wdt_reset();
+   if (!reset) wdt_reset();
+   heartbeat();
   }
 }
 
@@ -166,10 +183,7 @@ int main() {
 //                                                                       TIMER 0
 // -----------------------------------------------------------------------------
 ISR(TIMER0_COMP_vect){
-  // 400e-6 / (T_clk *5) = 960 = 0x3c0
-  // 2100e-6 / (T_clk *5) = 5039.9 = 0x13b0
-
-  /*
+  /* checkloop
   counter == stop
     3 first cp skips
     1 second cp
@@ -217,7 +231,6 @@ ISR(TIMER0_COMP_vect){
    counter = stop only occurs once, no need to adjust rest to it, just substract
    difference from stop value once.
   */
-  TOG(PORTD, PD3);
   __asm__(
           "CLI \n\t"
           // set all ports of group high
@@ -231,34 +244,31 @@ ISR(TIMER0_COMP_vect){
           // load proper pin value from channel.pin
           "LDD r3, %a4+3 \n\t"
           // create new value for port
-          "LDI r26, 0xFF \n\t"
-          "EOR r26, r3 \n\t" // r26 <- ~r3
-          "OR r26, r8 \n\t"
+          "LDI r24, 0xFF \n\t"
+          "EOR r24, r3 \n\t" // invert r3
+          "OR r24, r8 \n\t"
           // write to port
-          "ST Y, r26 \n\t"
+          "ST Y, r24 \n\t"
 
           // repeat for second and third channel
           "LDD r28, %a4+6 \n\t"
           "MOV r4, r28 \n\t"
-          "LD r8, Y \n\t"       // #  #  #  #
-          "LDD r5, %a4+7 \n\t"  // 1  1  0  0
-          "LDI r26, 0xFF \n\t"  // 1  1  1  1
-          "EOR r26, r5 \n\t"    // 0  0  1  1
-          "OR r26, r8 \n\t"     // #  #  1  1
-          "ST Y, r26 \n\t"
+          "LD r8, Y \n\t"       
+          "LDD r5, %a4+7 \n\t"  
+          "LDI r24, 0xFF \n\t"  
+          "EOR r24, r5 \n\t"    
+          "OR r24, r8 \n\t"     
+          "ST Y, r24 \n\t"
 
           "LDD r28, %a4+10 \n\t"
           "MOV r6, r28 \n\t"
           "LD r8, Y \n\t"
           "LDD r7, %a4+11 \n\t"
-          "LDI r26, 0xFF \n\t"
-          "EOR r26, r7 \n\t"
-          "OR r26, r8 \n\t"
-          "ST Y, r26 \n\t"
+          "LDI r24, 0xFF \n\t"
+          "EOR r24, r7 \n\t"
+          "OR r24, r8 \n\t"
+          "ST Y, r24 \n\t"
 
-
-          // "LDI r24, 0xff \n\t"
-          // "OUT 0x1B, r24 \n\t"  // set all pins of port group high
           // wait 400 us
           "LDI r25, %0 \n\t"
           "LDI r24, %1 \n\t"
@@ -278,7 +288,7 @@ ISR(TIMER0_COMP_vect){
 
          "checkloop: \n\t"
           // first in group
-          "CPSE r17, r25 \n\t"  // from here
+          "CPSE r17, r25 \n\t"  
           "JMP noclear1A \n\t"
           "CP r16, r24 \n\t"
           "BRNE noclear1B \n\t"
@@ -296,7 +306,7 @@ ISR(TIMER0_COMP_vect){
           "nop \n\t"
           "nop \n\t"
          "noclear1B: \n\t"
-         "finalpart1: \n\t"  // to here is 9 cycles, always.
+         "finalpart1: \n\t"  
 
           //second in group
           "CPSE r19, r25 \n\t"
@@ -320,9 +330,9 @@ ISR(TIMER0_COMP_vect){
           "CP r20, r24 \n\t"
           "BRNE noclear3B \n\t"
           "MOV r28, r6 \n\t"
-          "LD r8, Y \n\t"  // #   #   #   #
-          "MOV r9, r7 \n\t"// 1   1   0   1
-          "AND r9, r8 \n\t"// #   #   0   #
+          "LD r8, Y \n\t"  
+          "MOV r9, r7 \n\t"
+          "AND r9, r8 \n\t"
           "ST Y, r9 \n\t"
           "JMP finalpart3 \n\t"
          "noclear3A: \n\t"
@@ -334,65 +344,39 @@ ISR(TIMER0_COMP_vect){
           "SBIW r24, 0x01 \n\t"
           "BRNE checkloop \n\t"
           // clear all at end
-          "MOV r27, r2 \n\t"
+          "MOV r28, r2 \n\t"
           "LD r8, Y \n\t" 
           "MOV r9, r3 \n\t" 
           "AND r9, r8 \n\t" 
           "ST Y, r9 \n\t"
-          "MOV r27, r4 \n\t"
+          "MOV r28, r4 \n\t"
           "LD r8, Y \n\t"
           "MOV r9, r5 \n\t"
           "AND r9, r8 \n\t"
           "ST Y, r9 \n\t"
-          "MOV r27, r6 \n\t"
+          "MOV r28, r6 \n\t"
           "LD r8, Y \n\t"
           "MOV r9, r7 \n\t"
-          "AND r9, r8 \n\t"
+          "AND r9, r8 \n\t" // TODO(michie): no need for r9 really
           "ST Y, r9 \n\t"
-
           
           "SEI \n\t"
   ::"M"(ASM400HI),"M"(ASM400LO),
     "M"(ASM1700HI),"M"(ASM1700LO),
     "z"(group_ptr):"r2","r3","r4","r5","r6","r7","r8","r9","r16","r17","r18",
-    "r19","20","r21","r22","r23","r24","r28","r29");
+    "r19","20","r21","r24","r25","r28","r29");
+  
+  // point to the next 3 channels for the next timer interrupt
   if (group_ptr == &servo_channels[0]) {
     group_ptr = &servo_channels[3];
-    SET(PORTD, PD5);
-    OCR0 = 30;
+    OCR0 = SHORT_INTERVAL;
   } else if (group_ptr == &servo_channels[3]) {
     group_ptr = &servo_channels[6];
   } else if (group_ptr == &servo_channels[6]) {
     group_ptr = &servo_channels[9];
   } else if (group_ptr == &servo_channels[9]) {
     group_ptr = &servo_channels[0];
-    OCR0 = 115;
-    CLR(PORTD, PD5);
+    OCR0 = REMAINING_TIME;
+    ++servo_cycle_counter;
   }
-  /*
-  set timer to 200 Hz and do groups of 8?
-  stick to 12 for now, 4 groups of 3, OCR0 = 58
-    can't do that. need room for I2C
-    let's do 4 groups at OCR0 = 30 and then go from there
-  start of Interrupt, load index value
-  use index value to select start of loading points for stop values
-  also load ports and pins from mem...
-  setting a single port:
-
-  2 LDD r30, %servo_channels+2 (aka portno)
-  2 LDI r31, __zero_reg__
-  2 LDD r22, %servo_channels+3 (aka pin (already as ~(1<<pinno) ie a zero at pin#)
-  2 LDD r23 Z-2 ( PIN is 2 lower than PORT)
-  1 AND r22, r23
-  2 ST Z, r22
- ---
- 11
-
- + do three times before starting loops
- + LDD can only do positive, so store PIN instead of PORT
-
- technically, there's already a proper counter at 12MHz called counter1
- using that and checking the interrupt flag saves some cycles... but really
- not that much (maybe 2?)
-  */
 }
