@@ -54,8 +54,8 @@
 
 #define SERVO_AMOUNT 12
 
-#define ASM400HI 0x03
-#define ASM400LO 0xC0
+#define ASM400HI 0x04
+#define ASM400LO 0xB0
 #define ASM1700LO 0xA0
 #define ASM1700HI 0x03
 // 1100e-6 * 12e6 / 22 = 600
@@ -78,13 +78,42 @@ volatile ServoChannel_t* group_ptr;
 uint8_t servo_cycle_counter = 0;
 
 //i2c
-uint8_t r_index =0;
+uint8_t r_index = 0;
 uint8_t recv[BUFLEN_SERVO_DATA]; // buffer to store received bytes
-uint8_t t_index=0;
+uint8_t t_index = 0;
 uint8_t tran[BUFLEN_SERVO_DATA];
-uint8_t new_cmd=0;
-uint8_t reset=0;
+uint8_t new_cmd = 0;
+uint8_t reset = 0;
 uint8_t command = 0;
+
+// -----------------------------------------------------------------------------
+//                                                             eeprom_write_byte
+// -----------------------------------------------------------------------------
+void eeprom_write_byte(uint8_t address, uint8_t value){
+  // wait for access
+  while(CHK(EECR, EEWE)){
+  ;
+  }
+  EEAR = address;
+  EEDR = value;
+  SET(EECR,EEMWE);
+  SET(EECR, EEWE);
+}
+
+// -----------------------------------------------------------------------------
+//                                                              eeprom_read_byte
+// -----------------------------------------------------------------------------
+uint8_t eeprom_read_byte(uint8_t address){
+  // wait for access
+  while(CHK(EECR, EEWE)){
+  ;
+  }
+  EEAR = address;
+  SET(EECR,EERE);
+  return EEDR;
+  
+}
+
 
 // -----------------------------------------------------------------------------
 //                                                                 init_channels
@@ -95,15 +124,19 @@ inline void init_channels() {
   // and ~(1<<pinnumber) for pins
   // servo.stop = base value - (x * 12MHz) / 22
   //    where x is the time you want added to 400us
-
+  SET(PORTD, PD5);
   uint8_t i = 0;
   for (i = 0; i < 8; ++i) {
-    servo_channels[i].servo.stop = ((ASM1700HI<<8)|(ASM1700LO)) - MIDPULSE;
+    servo_channels[i].servo.stopbytes[1] =  eeprom_read_byte(i<<1);
+    servo_channels[i].servo.stopbytes[0] =  eeprom_read_byte((i<<1) + 1);
+    // servo_channels[i].servo.stop = ((ASM1700HI<<8)|(ASM1700LO)) - MIDPULSE;
     servo_channels[i].port = _SFR_IO_ADDR(PORTA) + 32;
     servo_channels[i].pin = ~(1<<i);
   }
   for (i = 8; i < SERVO_AMOUNT; ++i) {
-    servo_channels[i].servo.stop = ((ASM1700HI<<8)|(ASM1700LO)) - MIDPULSE;
+    servo_channels[i].servo.stopbytes[1] =  eeprom_read_byte(i<<1);
+    servo_channels[i].servo.stopbytes[0] =  eeprom_read_byte((i<<1) + 1);
+    // servo_channels[i].servo.stop = ((ASM1700HI<<8)|(ASM1700LO)) - MIDPULSE;
     servo_channels[i].port = _SFR_IO_ADDR(PORTC) + 32;
     servo_channels[i].pin = ~(1<<(i - 6));
   }
@@ -112,8 +145,8 @@ inline void init_channels() {
   DDRC |= (1<<PC2)|(1<<PC3)|(1<<PC4)|(1<<PC5);
   PORTC &= ~((1<<PC2)|(1<<PC3)|(1<<PC4)|(1<<PC5));
 
-  servo_channels[0].servo.stop = ((ASM1700HI<<8)|(ASM1700LO)) - 328;
-  
+  // servo_channels[0].servo.stop = ((ASM1700HI<<8)|(ASM1700LO)) - 328;
+  CLR(PORTD, PD5);
 
   // TODO add offsets per pin based on their pos in cycle
 }
@@ -249,6 +282,33 @@ inline void handle_I2C(){ // slave version
   }
 }
 
+// -----------------------------------------------------------------------------
+//                                                                       execute
+// -----------------------------------------------------------------------------
+inline void execute(){
+  register uint8_t i;
+  switch(command){
+  case I2C_RESET:
+    reset = 1;
+    break;
+  case I2C_LOAD_STARTPOS:
+    cli();
+    for (i = 0; i < BUFLEN_SERVO_DATA; ++i) {
+      recv[i] = eeprom_read_byte(i);
+    }
+    sei();
+    break;
+  case I2C_SAVE_STARTPOS:
+    cli();
+    for (i = 0; i < BUFLEN_SERVO_DATA; ++i) {
+      eeprom_write_byte(i, servo_channels[i>>1].servo.stopbytes[1-i%2]);
+    }
+    sei();
+    break;
+  }
+  command=0;
+}
+
 
 // =============================================================================
 //                                                                          main
@@ -267,9 +327,13 @@ int main() {
       heartbeat();
       handle_I2C();
       if (r_index == BUFLEN_SERVO_DATA) {
-        uint8_t i = 0;
-        for (i = 0; i < BUFLEN_SERVO_DATA; ++i) {
-          servo_channels[i>>1].servo.stopbytes[1-i%2] = recv[i];
+        if (command == 0) {
+          uint8_t i = 0;
+          for (i = 0; i < BUFLEN_SERVO_DATA; ++i) {
+            servo_channels[i>>1].servo.stopbytes[1-i%2] = recv[i];
+          }
+        } else {
+          execute();
         }
       }
     } else { 
@@ -372,7 +436,7 @@ ISR(TIMER0_COMP_vect){
           "LDI r25, %0 \n\t"
           "LDI r24, %1 \n\t"
          "loopje: \n\t"
-          "WDR \n\t"
+          // "WDR \n\t"
           "SBIW r24, 0x01 \n\t"
           "BRNE loopje \n\t"
           // load counter value for 1700 us
