@@ -1,7 +1,7 @@
 // name: servocontrollerI2C.c
 // Author: Michiel van der Coelen
 // contact: Michiel.van.der.coelen@gmail.com
-// date: 2014-09
+// date: 2015-12
 // tabsize: 2
 // width: 80
 // This code is distributed under the GNU Public License
@@ -46,11 +46,16 @@
 #include <avr/interrupt.h>
 
 #include "i2c_header.h"
+#include "smbus_slave/smbus_slave.h"
+smbus_mem_t smbus_mem;
 
-#define SET(x,y) (x|=(1<<y))
-#define CLR(x,y) (x&=(~(1<<y)))
-#define CHK(x,y) (x&(1<<y))
-#define TOG(x,y) (x^=(1<<y))
+void smbus_receive_command(uint8_t command) {
+  
+}
+
+void smbus_block_write_done() {
+  
+}
 
 #define SERVO_AMOUNT 12
 
@@ -58,7 +63,7 @@
 #define ASM400LO 0xB0
 #define ASM1700LO 0xA0
 #define ASM1700HI 0x03
-// 1100e-6 * 12e6 / 22 = 600
+// 1100e-6 * 12e6 / 22 = 600, aka 0x0258
 #define MIDPULSE 600
 
 #define SHORT_INTERVAL 30
@@ -74,7 +79,7 @@ typedef struct {
 } ServoChannel_t;
 
 ServoChannel_t servo_channels[SERVO_AMOUNT];
-volatile ServoChannel_t* group_ptr;
+volatile uint8_t* group_ptr;
 uint8_t servo_cycle_counter = 0;
 
 //i2c
@@ -127,18 +132,26 @@ inline void init_channels() {
   SET(PORTD, PD5);
   uint8_t i = 0;
   for (i = 0; i < 8; ++i) {
-    servo_channels[i].servo.stopbytes[1] =  eeprom_read_byte(i<<1);
-    servo_channels[i].servo.stopbytes[0] =  eeprom_read_byte((i<<1) + 1);
-    // servo_channels[i].servo.stop = ((ASM1700HI<<8)|(ASM1700LO)) - MIDPULSE;
-    servo_channels[i].port = _SFR_IO_ADDR(PORTA) + 32;
-    servo_channels[i].pin = ~(1<<i);
+    smbus_mem.dev_specific.stopbytes[i*2+0] = 0xfb;//eeprom_read_byte((i<<1)+1);
+    smbus_mem.dev_specific.stopbytes[i*2+1] = 0x02;//eeprom_read_byte((i<<1)+0);
+    smbus_mem.dev_specific.ports[i*2] = _SFR_IO_ADDR(PORTA) + 32;
+    smbus_mem.dev_specific.pins[i*2] = ~(1<<i);
+    // servo_channels[i].servo.stopbytes[1] =  eeprom_read_byte(i<<1);
+    // servo_channels[i].servo.stopbytes[0] =  eeprom_read_byte((i<<1) + 1);
+    //// servo_channels[i].servo.stop = ((ASM1700HI<<8)|(ASM1700LO)) - MIDPULSE;
+    // servo_channels[i].port = _SFR_IO_ADDR(PORTA) + 32;
+    // servo_channels[i].pin = ~(1<<i);
   }
   for (i = 8; i < SERVO_AMOUNT; ++i) {
-    servo_channels[i].servo.stopbytes[1] =  eeprom_read_byte(i<<1);
-    servo_channels[i].servo.stopbytes[0] =  eeprom_read_byte((i<<1) + 1);
-    // servo_channels[i].servo.stop = ((ASM1700HI<<8)|(ASM1700LO)) - MIDPULSE;
-    servo_channels[i].port = _SFR_IO_ADDR(PORTC) + 32;
-    servo_channels[i].pin = ~(1<<(i - 6));
+    smbus_mem.dev_specific.stopbytes[i*2+0] = 0x58;//eeprom_read_byte((i<<1)+1);
+    smbus_mem.dev_specific.stopbytes[i*2+1] = 0x02;//eeprom_read_byte((i<<1)+0);
+    smbus_mem.dev_specific.ports[i*2] = _SFR_IO_ADDR(PORTC) + 32;
+    smbus_mem.dev_specific.pins[i*2] = ~(1<<(i - 6));
+    // servo_channels[i].servo.stopbytes[1] =  eeprom_read_byte(i<<1);
+    // servo_channels[i].servo.stopbytes[0] =  eeprom_read_byte((i<<1) + 1);
+    //// servo_channels[i].servo.stop = ((ASM1700HI<<8)|(ASM1700LO)) - MIDPULSE;
+    // servo_channels[i].port = _SFR_IO_ADDR(PORTC) + 32;
+    // servo_channels[i].pin = ~(1<<(i - 6));
   }
   DDRA = 0xFF;
   PORTA = 0x00;
@@ -153,17 +166,6 @@ inline void init_channels() {
 
 
 // -----------------------------------------------------------------------------
-//                                                                      init_I2C
-// -----------------------------------------------------------------------------
-inline void init_I2C(){
-  // load slave address
-  TWAR = (0x01<<1); // we're using address 0x01 
-  // enable I2C hardware
-  TWCR = (1<<TWEN)|(1<<TWEA);
-}
-
-
-// -----------------------------------------------------------------------------
 //                                                                   init_timers
 // -----------------------------------------------------------------------------
 void init_timers() {
@@ -172,7 +174,6 @@ void init_timers() {
   TCCR0 = (1<<WGM01)|(1<<CS02)|(1<<CS00);
   OCR0 = SHORT_INTERVAL;
   SET(TIMSK, OCIE0);
-  sei();
 }
 
 // -----------------------------------------------------------------------------
@@ -193,92 +194,6 @@ inline void heartbeat() {
     CLR(PORTD, PD3);
   } else {
     servo_cycle_counter = 255;
-  }
-}
-
-// -----------------------------------------------------------------------------
-//                                                                    handle_I2C
-// -----------------------------------------------------------------------------
-inline void handle_I2C(){ // slave version
-  // stop values for servos are sent lsb first
-
-  // check if we need to do any software actions
-  if (CHK(TWCR,TWINT)) {
-    SET(PORTD, PD5);
-    switch(TW_STATUS){
-// --------------Slave receiver------------------------------------
-    // SLA_W received and acked, prepare for data receiving
-    case 0x60:  
-      TWACK;
-      r_index =0;
-      break;
-    case 0x80:  // a byte was received, store it and 
-                // setup the buffer to recieve another
-      // check if the received buffer is a command
-      if (r_index ==0) {
-        if (TWDR > ASM1700HI) {
-          new_cmd = TWDR;
-        } else {
-          recv[r_index] = TWDR;
-          new_cmd =0;
-        }
-      } 
-      if (r_index>0) {
-        if (new_cmd == 0) {
-          recv[r_index]= TWDR;
-        }
-        if (new_cmd != TWDR) new_cmd = 0;
-      }
-      r_index++;
-      // don't ack next data if buffer is full
-      if (r_index >= BUFLEN_SERVO_DATA) {
-        TWNACK;
-        command = new_cmd;
-      } else {
-    TWACK;
-   }
-   break;
-    case 0x68:  // adressed as slave while in master mode.
-              // should never happen, better reset;
-      reset=1;
-    case 0xA0: // Stop or rep start, reset state machine
-      TWACK;
-      break;
-// -------------- error recovery ----------------------------------
-    case 0x88: // data received  but not acked
-      // should not happen if the master is behaving as expected
-      // switch to not adressed mode
-      TWACK;
-      break;
-// ---------------Slave Transmitter--------------------------------
-    case 0xA8:  // SLA R received, prep for transmission
-                // and load first data
-      t_index=1;
-      TWDR = servo_channels[0].servo.stopbytes[0];
-      TWACK;
-      break;
-    case 0xB8:  // data transmitted and acked by master, load next
-      TWDR = servo_channels[t_index>>1].servo.stopbytes[1-t_index%2];
-      t_index++;
-      // designate last byte if we're at the end of the buffer
-      if(t_index >= BUFLEN_SERVO_DATA) TWNACK;
-      else TWACK;
-      break;
-    case 0xC8: // last byte send and acked by master
-    // last bytes should not be acked, ignore till start/stop
-      // reset=1;
-    case 0xC0: // last byte send and nacked by master 
-    // (as should be)
-      TWACK;
-      break;
-// --------------------- bus error---------------------------------
-    // illegal start or stop received, reset the I2C hardware
-    case 0x00: 
-      TWRESET;
-      break;
-    }
-  } else {
-    CLR(PORTD, PD5);
   }
 }
 
@@ -318,24 +233,34 @@ int main() {
   PORTD = (0<<PD5)|(0<<PD3);  // red , green
   init_channels();
   init_timers();
-  group_ptr = &servo_channels[0];
-  init_I2C();
+  group_ptr = &smbus_mem.dev_specific.stopbytes[0];
+
+  smbus_mem.base.version_major = 1;
+  smbus_mem.base.version_minor = 0;
+  smbus_mem.base.dev_type_major = 2;
+  smbus_mem.base.dev_type_minor = 12;
+  smbus_mem.base.I2C_addr = 0x48;
+  init_smbus(&smbus_mem);
+  sei();
+
   wdt_enable(WDTO_1S);
   while(1) {
     if (!reset) {
       wdt_reset();
       heartbeat();
-      handle_I2C();
-      if (r_index == BUFLEN_SERVO_DATA) {
-        if (command == 0) {
-          uint8_t i = 0;
-          for (i = 0; i < BUFLEN_SERVO_DATA; ++i) {
-            servo_channels[i>>1].servo.stopbytes[1-i%2] = recv[i];
-          }
-        } else {
-          execute();
-        }
+      if (CHK(TWCR,TWINT)) {
+        i2cstuff(&smbus_mem);
       }
+      // if (r_index == BUFLEN_SERVO_DATA) {
+        // if (command == 0) {
+          // uint8_t i = 0;
+          // for (i = 0; i < BUFLEN_SERVO_DATA; ++i) {
+            // servo_channels[i>>1].servo.stopbytes[1-i%2] = recv[i];
+          // }
+        // } else {
+          // execute();
+        // }
+      // }
     } else { 
       SET(PORTD, PD5);
     }
@@ -394,18 +319,21 @@ ISR(TIMER0_COMP_vect){
    counter = stop only occurs once, no need to adjust rest to it, just substract
    difference from stop value once.
   */
+  TWCR = 0;
   __asm__(
           "CLI \n\t"
           // set all ports of group high
           // first channel
           // load pin address on Y
-          "LDD r28, %a4+2 \n\t"
+          // "LDD r28, %a4+2 \n\t"
+          "LDD r28, %a4+24 \n\t"
           "MOV r29, __zero_reg__ \n\t"
           "MOV r2, r28 \n\t" // also store pin addr in r2
           // read pin value
           "LD r8, Y \n\t"
           // load proper pin value from channel.pin
-          "LDD r3, %a4+3 \n\t"
+          // "LDD r3, %a4+3 \n\t"
+          "LDD r3, %a4+48 \n\t"
           // create new value for port
           "LDI r24, 0xFF \n\t"
           "EOR r24, r3 \n\t" // invert r3
@@ -414,19 +342,23 @@ ISR(TIMER0_COMP_vect){
           "ST Y, r24 \n\t"
 
           // repeat for second and third channel
-          "LDD r28, %a4+6 \n\t"
+          // "LDD r28, %a4+6 \n\t"
+          "LDD r28, %a4+26 \n\t"
           "MOV r4, r28 \n\t"
           "LD r8, Y \n\t"       
-          "LDD r5, %a4+7 \n\t"  
+          // "LDD r5, %a4+7 \n\t"  
+          "LDD r5, %a4+50 \n\t"  
           "LDI r24, 0xFF \n\t"  
           "EOR r24, r5 \n\t"    
           "OR r24, r8 \n\t"     
           "ST Y, r24 \n\t"
 
-          "LDD r28, %a4+10 \n\t"
+          // "LDD r28, %a4+10 \n\t"
+          "LDD r28, %a4+28 \n\t"
           "MOV r6, r28 \n\t"
           "LD r8, Y \n\t"
-          "LDD r7, %a4+11 \n\t"
+          // "LDD r7, %a4+11 \n\t"
+          "LDD r7, %a4+52 \n\t"
           "LDI r24, 0xFF \n\t"
           "EOR r24, r7 \n\t"
           "OR r24, r8 \n\t"
@@ -442,12 +374,12 @@ ISR(TIMER0_COMP_vect){
           // load counter value for 1700 us
           "LDI r25, %2 \n\t"
           "LDI r24, %3 \n\t"
-          "LD r16, %a4 \n\t"   // 1
+          "LD  r16, %a4   \n\t"   // 1
           "LDD r17, %a4+1 \n\t"// 1
-          "LDD r18, %a4+4 \n\t"   // 1
-          "LDD r19, %a4+5 \n\t"// 1
-          "LDD r20, %a4+8 \n\t"   // 1
-          "LDD r21, %a4+9 \n\t"// 1
+          "LDD r18, %a4+2 \n\t"   // 1
+          "LDD r19, %a4+3 \n\t"// 1
+          "LDD r20, %a4+4 \n\t"   // 1
+          "LDD r21, %a4+5 \n\t"// 1
 
          "checkloop: \n\t"
           // first in group
@@ -530,16 +462,23 @@ ISR(TIMER0_COMP_vect){
     "r19","20","r21","r24","r25","r28","r29");
   
   // point to the next 3 channels for the next timer interrupt
-  if (group_ptr == &servo_channels[0]) {
-    group_ptr = &servo_channels[3];
+  if (group_ptr == &smbus_mem.dev_specific.stopbytes[0]) {
+    group_ptr = &smbus_mem.dev_specific.stopbytes[6];
     OCR0 = SHORT_INTERVAL;
-  } else if (group_ptr == &servo_channels[3]) {
-    group_ptr = &servo_channels[6];
-  } else if (group_ptr == &servo_channels[6]) {
-    group_ptr = &servo_channels[9];
-  } else if (group_ptr == &servo_channels[9]) {
-    group_ptr = &servo_channels[0];
+  } else if (group_ptr == &smbus_mem.dev_specific.stopbytes[6]) {
+    group_ptr = &smbus_mem.dev_specific.stopbytes[12];
+    // OCR0 = SHORT_INTERVAL;
+  } else if (group_ptr == &smbus_mem.dev_specific.stopbytes[12]) {
+    group_ptr = &smbus_mem.dev_specific.stopbytes[18];
+    // OCR0 = SHORT_INTERVAL;
+  } else if (group_ptr == &smbus_mem.dev_specific.stopbytes[18]) {
+    group_ptr = &smbus_mem.dev_specific.stopbytes[0];
     OCR0 = REMAINING_TIME;
     ++servo_cycle_counter;
+    TWCR = (1<<TWEN) | (1<<TWEA) | I2CIE;
   }
 }
+
+// ISR(TWI_vect) {
+  // i2cstuff(&smbus_mem);
+// }

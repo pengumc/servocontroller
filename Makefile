@@ -11,8 +11,8 @@ F_CPU = 12000000
 NAME = ServoControllerI2C
 
 
-OBJECTS =  $(NAME).o 
-CFLAGS = --save-temps -DF_CPU=$(F_CPU) -std=c99 -Wall -Os -mmcu=$(MMCU) -I.
+OBJECTS = $(NAME).o smbus_slave.o
+CFLAGS = --save-temps -DF_CPU=$(F_CPU) -std=gnu99 -Wall -Os -mmcu=$(MMCU) -I. -Iinclude
 CC = avr-gcc
 SIZE = avr-size
 OBJCOPY = avr-objcopy
@@ -46,6 +46,9 @@ clean:
 	rm -f $(OBJECTS) $(NAME).elf
 
 program: bin/$(NAME).hex
+	avrdude -c $(AVRDUDE_PROGRAMMERID) -p $(AVRDUDE_MCU) -U flash:w:bin/$(NAME).hex
+
+programf:
 	avrdude -c $(AVRDUDE_PROGRAMMERID) -p $(AVRDUDE_MCU) -U flash:w:bin/$(NAME).hex
 
 test:
