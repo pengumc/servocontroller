@@ -46,6 +46,7 @@ typedef struct {
 typedef struct {
   uint8_t data_count;
   uint8_t addr;
+  uint8_t response;
   union {
     uint8_t bytes[sizeof(smbus_basic_mem_t) + sizeof(smbus_dev_specific_mem_t)];
     struct {

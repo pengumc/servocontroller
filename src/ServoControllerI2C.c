@@ -249,7 +249,9 @@ int main() {
       wdt_reset();
       heartbeat();
       if (CHK(TWCR,TWINT)) {
+        SET(PORTD, PD5);
         i2cstuff(&smbus_mem);
+        CLR(PORTD, PD5);
       }
       // if (r_index == BUFLEN_SERVO_DATA) {
         // if (command == 0) {
@@ -261,9 +263,7 @@ int main() {
           // execute();
         // }
       // }
-    } else { 
-      SET(PORTD, PD5);
-    }
+    } 
   }
 }
 
