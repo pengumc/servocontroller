@@ -48,13 +48,14 @@
 #include "i2c_header.h"
 #include "smbus_slave/smbus_slave.h"
 smbus_mem_t smbus_mem;
+uint8_t pin_stash[12];
 
 void smbus_receive_command(uint8_t command) {
-  
+
 }
 
 void smbus_block_write_done() {
-  
+
 }
 
 #define SERVO_AMOUNT 12
@@ -69,27 +70,20 @@ void smbus_block_write_done() {
 #define SHORT_INTERVAL 30
 #define REMAINING_TIME 115
 
-typedef struct {
-  union {
-    uint16_t stop;
-    uint8_t stopbytes[2];
-  } servo;
-  uint8_t port;
-  uint8_t pin;
-} ServoChannel_t;
-
-ServoChannel_t servo_channels[SERVO_AMOUNT];
 volatile uint8_t* group_ptr;
-uint8_t servo_cycle_counter = 0;
+volatile uint8_t servo_cycle_counter = 0;
 
-//i2c
-uint8_t r_index = 0;
-uint8_t recv[BUFLEN_SERVO_DATA]; // buffer to store received bytes
-uint8_t t_index = 0;
-uint8_t tran[BUFLEN_SERVO_DATA];
-uint8_t new_cmd = 0;
 uint8_t reset = 0;
-uint8_t command = 0;
+
+#define STATE_INITIALIZING (0)
+#define STATE_RUNNING (1)
+#define STATE_ERROR (2)
+#define POWER_LED_ON() SET(PORTC, PC6)
+#define POWER_LED_OFF() CLR(PORTC, PC6)
+#define HEARTBEAT_LED_ON() SET(PORTC, PC7)
+#define HEARTBEAT_LED_OFF() CLR(PORTC, PC7)
+#define ERROR_LED_ON() SET(PORTB, PB0)
+#define ERROR_LED_OFF() CLR(PORTB, PB0)
 
 // -----------------------------------------------------------------------------
 //                                                             eeprom_write_byte
@@ -116,7 +110,7 @@ uint8_t eeprom_read_byte(uint8_t address){
   EEAR = address;
   SET(EECR,EERE);
   return EEDR;
-  
+
 }
 
 
@@ -125,12 +119,51 @@ uint8_t eeprom_read_byte(uint8_t address){
 // -----------------------------------------------------------------------------
 inline void init_channels() {
   // hardcoded ports and pins
-  // use _SFR_IO_ADDR(PORTA) + 32 for ports 
+  // use _SFR_IO_ADDR(PORTA) + 32 for ports
   // and ~(1<<pinnumber) for pins
   // servo.stop = base value - (x * 12MHz) / 22
   //    where x is the time you want added to 400us
-  SET(PORTD, PD5);
   uint8_t i = 0;
+  for (i = 0; i < 12; ++i) {
+    smbus_mem.dev_specific.stopbytes[i*2+0] = 0x47;//eeprom_read_byte((i<<1)+1);
+    smbus_mem.dev_specific.stopbytes[i*2+1] = 0x01;//eeprom_read_byte((i<<1)+0);
+    smbus_mem.dev_specific.pins[i*2+0] = 0xff;
+    // smbus_mem.dev_specific.pins[i*2+1] = 0xff; // not needed
+  }
+  // all of PORTD
+  PORTD = 0x00;
+  DDRD = 0xFF;
+  smbus_mem.dev_specific.ports[0] = _SFR_IO_ADDR(PORTD) + 32;
+
+  pin_stash[0] = ~(1<<0);
+  smbus_mem.dev_specific.ports[2] = _SFR_IO_ADDR(PORTD) + 32;
+  pin_stash[1] = ~(1<<1);
+  smbus_mem.dev_specific.ports[4] = _SFR_IO_ADDR(PORTD) + 32;
+  pin_stash[2] = ~(1<<2);
+  smbus_mem.dev_specific.ports[6] = _SFR_IO_ADDR(PORTD) + 32;
+  pin_stash[3] = ~(1<<3);
+  smbus_mem.dev_specific.ports[8] = _SFR_IO_ADDR(PORTD) + 32;
+  pin_stash[4] = ~(1<<4);
+  smbus_mem.dev_specific.ports[10] = _SFR_IO_ADDR(PORTD) + 32;
+  pin_stash[5] = ~(1<<5);
+  smbus_mem.dev_specific.ports[12] = _SFR_IO_ADDR(PORTD) + 32;
+  pin_stash[6] = ~(1<<6);
+  smbus_mem.dev_specific.ports[14] = _SFR_IO_ADDR(PORTD) + 32;
+  pin_stash[7] = 0x7F; // compiler thinks ~(1<<7) is 16 bits signed
+  // PORTC 2 to 5
+  PORTC &= ~((1<<2) | (1<<3) | (1<<4) | (1<<5));
+  DDRC  |=   (1<<2) | (1<<3) | (1<<4) | (1<<5);
+  smbus_mem.dev_specific.ports[16] = _SFR_IO_ADDR(PORTC) + 32;
+  pin_stash[8] = ~(1<<2);
+  smbus_mem.dev_specific.ports[18] = _SFR_IO_ADDR(PORTC) + 32;
+  pin_stash[9] = ~(1<<3);
+  smbus_mem.dev_specific.ports[20] = _SFR_IO_ADDR(PORTC) + 32;
+  pin_stash[10] = ~(1<<4);
+  smbus_mem.dev_specific.ports[22] = _SFR_IO_ADDR(PORTC) + 32;
+  pin_stash[11] = ~(1<<5);
+
+  /*
+  SET(PORTD, PD5);
   for (i = 0; i < 8; ++i) {
     smbus_mem.dev_specific.stopbytes[i*2+0] = 0xfb;//eeprom_read_byte((i<<1)+1);
     smbus_mem.dev_specific.stopbytes[i*2+1] = 0x02;//eeprom_read_byte((i<<1)+0);
@@ -160,7 +193,7 @@ inline void init_channels() {
 
   // servo_channels[0].servo.stop = ((ASM1700HI<<8)|(ASM1700LO)) - 328;
   CLR(PORTD, PD5);
-
+  */
   // TODO add offsets per pin based on their pos in cycle
 }
 
@@ -179,19 +212,19 @@ void init_timers() {
 // -----------------------------------------------------------------------------
 //                                                                     heartbeat
 // -----------------------------------------------------------------------------
-inline void heartbeat() {
+void heartbeat() {
   /*
-   * 0  15 30  45 250
-   * 1  0  1   0  0   
+   * 0  15 30  45 100
+   * 1  0  1   0  loop
    */
   if (servo_cycle_counter < 15) {
-    SET(PORTD, PD3);
+    HEARTBEAT_LED_ON();
   } else if (servo_cycle_counter < 30) {
-    CLR(PORTD, PD3);
+    HEARTBEAT_LED_OFF();
   } else if (servo_cycle_counter < 45) {
-    SET(PORTD, PD3);
+    HEARTBEAT_LED_ON();
   } else if (servo_cycle_counter < 100) {
-    CLR(PORTD, PD3);
+    HEARTBEAT_LED_OFF();
   } else {
     servo_cycle_counter = 255;
   }
@@ -200,70 +233,95 @@ inline void heartbeat() {
 // -----------------------------------------------------------------------------
 //                                                                       execute
 // -----------------------------------------------------------------------------
-inline void execute(){
-  register uint8_t i;
-  switch(command){
-  case I2C_RESET:
-    reset = 1;
-    break;
-  case I2C_LOAD_STARTPOS:
-    cli();
-    for (i = 0; i < BUFLEN_SERVO_DATA; ++i) {
-      recv[i] = eeprom_read_byte(i);
-    }
-    sei();
-    break;
-  case I2C_SAVE_STARTPOS:
-    cli();
-    for (i = 0; i < BUFLEN_SERVO_DATA; ++i) {
-      eeprom_write_byte(i, servo_channels[i>>1].servo.stopbytes[1-i%2]);
-    }
-    sei();
-    break;
-  }
-  command=0;
-}
+// inline void execute(){
+  // register uint8_t i;
+  // switch(command){
+  // case I2C_RESET:
+    // reset = 1;
+    // break;
+  // case I2C_LOAD_STARTPOS:
+    // cli();
+    // for (i = 0; i < BUFLEN_SERVO_DATA; ++i) {
+      // recv[i] = eeprom_read_byte(i);
+    // }
+    // sei();
+    // break;
+  // case I2C_SAVE_STARTPOS:
+    // cli();
+    // for (i = 0; i < BUFLEN_SERVO_DATA; ++i) {
+      // eeprom_write_byte(i, servo_channels[i>>1].servo.stopbytes[1-i%2]);
+    // }
+    // sei();
+    // break;
+  // }
+  // command=0;
+// }
 
 
 // =============================================================================
 //                                                                          main
 // =============================================================================
 int main() {
-  DDRD = (1<<PD5)|(1<<PD3);
-  PORTD = (0<<PD5)|(0<<PD3);  // red , green
+  // green power led on PC6
+  SET(DDRC, PC6);
+  POWER_LED_ON();
+  // green heartbeat led on PC7
+  SET(DDRC, PC7);
+  HEARTBEAT_LED_OFF();
+  // red error led on PB0
+  SET(DDRB, PB0);
+  ERROR_LED_OFF();
+  // smbus values
+  smbus_mem.base.dev_type_major = 2;
+  smbus_mem.base.dev_type_minor = 12;
+  smbus_mem.base.version_major = 1;
+  smbus_mem.base.version_minor = 0;
+  smbus_mem.base.I2C_addr = 0x48;
+  smbus_mem.dev_specific.servo_count = 12;
+  smbus_mem.dev_specific.last_initialized = -1;
+  smbus_mem.dev_specific.state = STATE_INITIALIZING;
+  init_smbus(&smbus_mem);
+  // setup channels and timers
   init_channels();
   init_timers();
   group_ptr = &smbus_mem.dev_specific.stopbytes[0];
-
-  smbus_mem.base.version_major = 1;
-  smbus_mem.base.version_minor = 0;
-  smbus_mem.base.dev_type_major = 2;
-  smbus_mem.base.dev_type_minor = 12;
-  smbus_mem.base.I2C_addr = 0x48;
-  init_smbus(&smbus_mem);
+  servo_cycle_counter = 0;
+  // go
   sei();
 
   wdt_enable(WDTO_1S);
   while(1) {
     if (!reset) {
       wdt_reset();
-      heartbeat();
-      if (CHK(TWCR,TWINT)) {
-        SET(PORTD, PD5);
-        i2cstuff(&smbus_mem);
-        CLR(PORTD, PD5);
+      switch (smbus_mem.dev_specific.state) {
+        case STATE_RUNNING: {
+          // keep up the heartbeat
+          heartbeat();
+          break;
+        }
+        case STATE_INITIALIZING: {
+          if (smbus_mem.dev_specific.last_initialized <
+              smbus_mem.dev_specific.servo_count) {
+            if (servo_cycle_counter >= 20) {
+              ++smbus_mem.dev_specific.last_initialized;
+              register uint8_t a = smbus_mem.dev_specific.last_initialized;
+              smbus_mem.dev_specific.pins[a*2] = pin_stash[a];
+              servo_cycle_counter = 0;
+            }
+          } else {
+            smbus_mem.dev_specific.state = STATE_RUNNING;
+          }
+          break;
+        }
+        case STATE_ERROR: {
+          cli();
+          break;
+        }
       }
-      // if (r_index == BUFLEN_SERVO_DATA) {
-        // if (command == 0) {
-          // uint8_t i = 0;
-          // for (i = 0; i < BUFLEN_SERVO_DATA; ++i) {
-            // servo_channels[i>>1].servo.stopbytes[1-i%2] = recv[i];
-          // }
-        // } else {
-          // execute();
-        // }
-      // }
-    } 
+      if (CHK(TWCR,TWINT)) {
+        i2cstuff(&smbus_mem);
+      }
+    }
   }
 }
 
@@ -345,12 +403,12 @@ ISR(TIMER0_COMP_vect){
           // "LDD r28, %a4+6 \n\t"
           "LDD r28, %a4+26 \n\t"
           "MOV r4, r28 \n\t"
-          "LD r8, Y \n\t"       
-          // "LDD r5, %a4+7 \n\t"  
-          "LDD r5, %a4+50 \n\t"  
-          "LDI r24, 0xFF \n\t"  
-          "EOR r24, r5 \n\t"    
-          "OR r24, r8 \n\t"     
+          "LD r8, Y \n\t"
+          // "LDD r5, %a4+7 \n\t"
+          "LDD r5, %a4+50 \n\t"
+          "LDI r24, 0xFF \n\t"
+          "EOR r24, r5 \n\t"
+          "OR r24, r8 \n\t"
           "ST Y, r24 \n\t"
 
           // "LDD r28, %a4+10 \n\t"
@@ -383,7 +441,7 @@ ISR(TIMER0_COMP_vect){
 
          "checkloop: \n\t"
           // first in group
-          "CPSE r17, r25 \n\t"  
+          "CPSE r17, r25 \n\t"
           "JMP noclear1A \n\t"
           "CP r16, r24 \n\t"
           "BRNE noclear1B \n\t"
@@ -401,7 +459,7 @@ ISR(TIMER0_COMP_vect){
           "nop \n\t"
           "nop \n\t"
          "noclear1B: \n\t"
-         "finalpart1: \n\t"  
+         "finalpart1: \n\t"
 
           //second in group
           "CPSE r19, r25 \n\t"
@@ -425,7 +483,7 @@ ISR(TIMER0_COMP_vect){
           "CP r20, r24 \n\t"
           "BRNE noclear3B \n\t"
           "MOV r28, r6 \n\t"
-          "LD r8, Y \n\t"  
+          "LD r8, Y \n\t"
           "MOV r9, r7 \n\t"
           "AND r9, r8 \n\t"
           "ST Y, r9 \n\t"
@@ -440,9 +498,9 @@ ISR(TIMER0_COMP_vect){
           "BRNE checkloop \n\t"
           // clear all at end
           "MOV r28, r2 \n\t"
-          "LD r8, Y \n\t" 
-          "MOV r9, r3 \n\t" 
-          "AND r9, r8 \n\t" 
+          "LD r8, Y \n\t"
+          "MOV r9, r3 \n\t"
+          "AND r9, r8 \n\t"
           "ST Y, r9 \n\t"
           "MOV r28, r4 \n\t"
           "LD r8, Y \n\t"
@@ -454,13 +512,13 @@ ISR(TIMER0_COMP_vect){
           "MOV r9, r7 \n\t"
           "AND r9, r8 \n\t" // TODO(michie): no need for r9 really
           "ST Y, r9 \n\t"
-          
+
           "SEI \n\t"
   ::"M"(ASM400HI),"M"(ASM400LO),
     "M"(ASM1700HI),"M"(ASM1700LO),
     "z"(group_ptr):"r2","r3","r4","r5","r6","r7","r8","r9","r16","r17","r18",
     "r19","20","r21","r24","r25","r28","r29");
-  
+
   // point to the next 3 channels for the next timer interrupt
   if (group_ptr == &smbus_mem.dev_specific.stopbytes[0]) {
     group_ptr = &smbus_mem.dev_specific.stopbytes[6];
