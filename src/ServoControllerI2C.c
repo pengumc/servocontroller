@@ -209,6 +209,18 @@ void init_timers() {
   SET(TIMSK, OCIE0);
 }
 
+
+// -----------------------------------------------------------------------------
+//                                                                           ADC
+// -----------------------------------------------------------------------------
+inline void init_ADC() {
+  ADMUX = (1<<REFS1) | (1<<REFS0);
+  ADCSRA = (1<<ADEN) | (1<<ADPS2) | (1<<ADPS1) | (1<<ADPS0); // prescale 32
+  ACSR = (1<<ACD);
+  
+}
+
+
 // -----------------------------------------------------------------------------
 //                                                                     heartbeat
 // -----------------------------------------------------------------------------
@@ -217,13 +229,9 @@ void heartbeat() {
    * 0  15 30  45 100
    * 1  0  1   0  loop
    */
-  if (servo_cycle_counter < 15) {
+  if (servo_cycle_counter < 10) {
     HEARTBEAT_LED_ON();
-  } else if (servo_cycle_counter < 30) {
-    HEARTBEAT_LED_OFF();
-  } else if (servo_cycle_counter < 45) {
-    HEARTBEAT_LED_ON();
-  } else if (servo_cycle_counter < 100) {
+  } else if (servo_cycle_counter < 19) {
     HEARTBEAT_LED_OFF();
   } else {
     servo_cycle_counter = 255;
@@ -278,12 +286,14 @@ int main() {
   smbus_mem.base.version_minor = 0;
   smbus_mem.base.I2C_addr = 0x48;
   smbus_mem.dev_specific.servo_count = 12;
+  smbus_mem.dev_specific.undervoltage_level = 556; // 3.5 * (6.6/16.6/2.56*1024)
   smbus_mem.dev_specific.last_initialized = -1;
   smbus_mem.dev_specific.state = STATE_INITIALIZING;
   init_smbus(&smbus_mem);
   // setup channels and timers
   init_channels();
   init_timers();
+  init_ADC();
   group_ptr = &smbus_mem.dev_specific.stopbytes[0];
   servo_cycle_counter = 0;
   // go
@@ -296,20 +306,21 @@ int main() {
       switch (smbus_mem.dev_specific.state) {
         case STATE_RUNNING: {
           // keep up the heartbeat
-          heartbeat();
           break;
         }
         case STATE_INITIALIZING: {
+          heartbeat();
           if (smbus_mem.dev_specific.last_initialized <
               smbus_mem.dev_specific.servo_count) {
             if (servo_cycle_counter >= 20) {
-              ++smbus_mem.dev_specific.last_initialized;
               register uint8_t a = smbus_mem.dev_specific.last_initialized;
+              ++smbus_mem.dev_specific.last_initialized;
               smbus_mem.dev_specific.pins[a*2] = pin_stash[a];
               servo_cycle_counter = 0;
             }
           } else {
             smbus_mem.dev_specific.state = STATE_RUNNING;
+            HEARTBEAT_LED_ON();
           }
           break;
         }
@@ -317,6 +328,18 @@ int main() {
           cli();
           break;
         }
+      }
+      if (!CHK(ADCSRA, ADSC)) {
+        smbus_mem.dev_specific.input_voltage = ADCW;
+        ADCSRA |= (1<<ADSC);
+        // TODO flip chan
+      }
+      if (smbus_mem.dev_specific.input_voltage < 
+          smbus_mem.dev_specific.undervoltage_level &&
+          smbus_mem.dev_specific.last_initialized >= 0) {
+        HEARTBEAT_LED_OFF();
+        ERROR_LED_ON();
+        smbus_mem.dev_specific.state = STATE_ERROR;
       }
       if (CHK(TWCR,TWINT)) {
         i2cstuff(&smbus_mem);
@@ -510,7 +533,7 @@ ISR(TIMER0_COMP_vect){
           "MOV r28, r6 \n\t"
           "LD r8, Y \n\t"
           "MOV r9, r7 \n\t"
-          "AND r9, r8 \n\t" // TODO(michie): no need for r9 really
+          "AND r9, r8 \n\t" // TODO(michiel): no need for r9 really
           "ST Y, r9 \n\t"
 
           "SEI \n\t"
