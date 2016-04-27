@@ -84,6 +84,8 @@ uint8_t reset = 0;
 #define HEARTBEAT_LED_OFF() CLR(PORTC, PC7)
 #define ERROR_LED_ON() SET(PORTB, PB0)
 #define ERROR_LED_OFF() CLR(PORTB, PB0)
+#define COMM_SYNC_HIGH() SET(PORTB, PB1)
+#define COMM_SYNC_LOW() CLR(PORTB, PB1)
 
 // -----------------------------------------------------------------------------
 //                                                             eeprom_write_byte
@@ -279,6 +281,9 @@ int main() {
   // red error led on PB0
   SET(DDRB, PB0);
   ERROR_LED_OFF();
+  // comm sync pin
+  SET(DDRB, PB1);
+  COMM_SYNC_LOW();
   // smbus values
   smbus_mem.base.dev_type_major = 2;
   smbus_mem.base.dev_type_minor = 12;
@@ -286,7 +291,8 @@ int main() {
   smbus_mem.base.version_minor = 0;
   smbus_mem.base.I2C_addr = 0x48;
   smbus_mem.dev_specific.servo_count = 12;
-  smbus_mem.dev_specific.undervoltage_level = 556; // 3.5 * (6.6/16.6/2.56*1024)
+  // smbus_mem.dev_specific.undervoltage_level = 556; // 3.5 * (6.6/16.6/2.56*1024)
+  smbus_mem.dev_specific.undervoltage_level = 447; // 3.0 * (6.6/16.6/2.56*1024)
   smbus_mem.dev_specific.last_initialized = -1;
   smbus_mem.dev_specific.state = STATE_INITIALIZING;
   init_smbus(&smbus_mem);
@@ -401,6 +407,7 @@ ISR(TIMER0_COMP_vect){
    difference from stop value once.
   */
   TWCR = 0;
+  COMM_SYNC_LOW();
   __asm__(
           "CLI \n\t"
           // set all ports of group high
@@ -557,6 +564,7 @@ ISR(TIMER0_COMP_vect){
     OCR0 = REMAINING_TIME;
     ++servo_cycle_counter;
     TWCR = (1<<TWEN) | (1<<TWEA) | I2CIE;
+    COMM_SYNC_HIGH();
   }
 }
 
